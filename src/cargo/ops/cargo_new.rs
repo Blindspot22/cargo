@@ -1,7 +1,6 @@
 use crate::core::{Edition, Shell, Workspace};
 use crate::util::errors::CargoResult;
 use crate::util::important_paths::find_root_manifest_for_wd;
-use crate::util::toml_mut::is_sorted;
 use crate::util::{existing_vcs_repo, FossilRepo, GitRepo, HgRepo, PijulRepo};
 use crate::util::{restricted_names, GlobalContext};
 use anyhow::{anyhow, Context as _};
@@ -802,7 +801,7 @@ fn mk(gctx: &GlobalContext, opts: &MkOptions<'_>) -> CargoResult<()> {
         }
     }
 
-    let manifest_path = path.join("Cargo.toml");
+    let manifest_path = paths::normalize_path(&path.join("Cargo.toml"));
     if let Ok(root_manifest_path) = find_root_manifest_for_wd(&manifest_path) {
         let root_manifest = paths::read(&root_manifest_path)?;
         // Sometimes the root manifest is not a valid manifest, so we only try to parse it if it is.
@@ -906,7 +905,7 @@ mod tests {
         }
     }
 
-    if let Err(e) = Workspace::new(&path.join("Cargo.toml"), gctx) {
+    if let Err(e) = Workspace::new(&manifest_path, gctx) {
         crate::display_warning_with_error(
             "compiling this new package may not work due to invalid \
              workspace configuration",
@@ -995,7 +994,7 @@ fn update_manifest_with_new_member(
             }
         }
 
-        let was_sorted = is_sorted(members.iter().map(Value::as_str));
+        let was_sorted = members.iter().map(Value::as_str).is_sorted();
         members.push(display_path);
         if was_sorted {
             members.sort_by(|lhs, rhs| lhs.as_str().cmp(&rhs.as_str()));

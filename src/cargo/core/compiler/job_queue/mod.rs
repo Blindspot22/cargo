@@ -132,6 +132,7 @@ pub use self::job::Freshness::{self, Dirty, Fresh};
 pub use self::job::{Job, Work};
 pub use self::job_state::JobState;
 use super::build_runner::OutputFile;
+use super::custom_build::Severity;
 use super::timings::Timings;
 use super::{BuildContext, BuildPlan, BuildRunner, CompileMode, Unit};
 use crate::core::compiler::descriptive_pkg_name;
@@ -140,6 +141,7 @@ use crate::core::compiler::future_incompat::{
 };
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{PackageId, Shell, TargetKind};
+use crate::util::context::WarningHandling;
 use crate::util::diagnostic_server::{self, DiagnosticPrinter};
 use crate::util::errors::AlreadyPrintedError;
 use crate::util::machine_message::{self, Message as _};
@@ -513,7 +515,7 @@ impl<'gctx> JobQueue<'gctx> {
             .into_helper_thread(move |token| {
                 messages.push(Message::Token(token));
             })
-            .with_context(|| "failed to create helper thread for jobserver management")?;
+            .context("failed to create helper thread for jobserver management")?;
 
         // Create a helper thread to manage the diagnostics for rustfix if
         // necessary.
@@ -601,6 +603,7 @@ impl<'gctx> DrainState<'gctx> {
         plan: &mut BuildPlan,
         event: Message,
     ) -> Result<(), ErrorToHandle> {
+        let warning_handling = build_runner.bcx.gctx.warning_handling()?;
         match event {
             Message::Run(id, cmd) => {
                 build_runner
@@ -638,7 +641,9 @@ impl<'gctx> DrainState<'gctx> {
                 }
             }
             Message::Warning { id, warning } => {
-                build_runner.bcx.gctx.shell().warn(warning)?;
+                if warning_handling != WarningHandling::Allow {
+                    build_runner.bcx.gctx.shell().warn(warning)?;
+                }
                 self.bump_warning_count(id, true, false);
             }
             Message::WarningCount {
@@ -659,7 +664,7 @@ impl<'gctx> DrainState<'gctx> {
                         trace!("end: {:?}", id);
                         self.finished += 1;
                         self.report_warning_count(
-                            build_runner.bcx.gctx,
+                            build_runner,
                             id,
                             &build_runner.bcx.rustc().workspace_wrapper,
                         );
@@ -684,8 +689,8 @@ impl<'gctx> DrainState<'gctx> {
                         self.queue.finish(&unit, &artifact);
                     }
                     Err(error) => {
-                        let msg = "The following warnings were emitted during compilation:";
-                        self.emit_warnings(Some(msg), &unit, build_runner)?;
+                        let show_warnings = true;
+                        self.emit_log_messages(&unit, build_runner, show_warnings)?;
                         self.back_compat_notice(build_runner, &unit)?;
                         return Err(ErrorToHandle {
                             error,
@@ -700,7 +705,7 @@ impl<'gctx> DrainState<'gctx> {
                     .push(FutureIncompatReportPackage { package_id, items });
             }
             Message::Token(acquired_token) => {
-                let token = acquired_token.with_context(|| "failed to acquire jobserver token")?;
+                let token = acquired_token.context("failed to acquire jobserver token")?;
                 self.tokens.push(token);
             }
         }
@@ -962,11 +967,11 @@ impl<'gctx> DrainState<'gctx> {
         }
     }
 
-    fn emit_warnings(
-        &mut self,
-        msg: Option<&str>,
+    fn emit_log_messages(
+        &self,
         unit: &Unit,
         build_runner: &mut BuildRunner<'_, '_>,
+        show_warnings: bool,
     ) -> CargoResult<()> {
         let outputs = build_runner.build_script_outputs.lock().unwrap();
         let Some(metadata) = build_runner.find_build_script_metadata(unit) else {
@@ -974,21 +979,25 @@ impl<'gctx> DrainState<'gctx> {
         };
         let bcx = &mut build_runner.bcx;
         if let Some(output) = outputs.get(metadata) {
-            if !output.warnings.is_empty() {
-                if let Some(msg) = msg {
-                    writeln!(bcx.gctx.shell().err(), "{}\n", msg)?;
-                }
+            if !output.log_messages.is_empty()
+                && (show_warnings
+                    || output
+                        .log_messages
+                        .iter()
+                        .any(|(severity, _)| *severity == Severity::Error))
+            {
+                let msg_with_package =
+                    |msg: &str| format!("{}@{}: {}", unit.pkg.name(), unit.pkg.version(), msg);
 
-                for warning in output.warnings.iter() {
-                    let warning_with_package =
-                        format!("{}@{}: {}", unit.pkg.name(), unit.pkg.version(), warning);
-
-                    bcx.gctx.shell().warn(warning_with_package)?;
-                }
-
-                if msg.is_some() {
-                    // Output an empty line.
-                    writeln!(bcx.gctx.shell().err())?;
+                for (severity, message) in output.log_messages.iter() {
+                    match severity {
+                        Severity::Error => {
+                            bcx.gctx.shell().error(msg_with_package(message))?;
+                        }
+                        Severity::Warning => {
+                            bcx.gctx.shell().warn(msg_with_package(message))?;
+                        }
+                    }
                 }
             }
         }
@@ -1019,17 +1028,19 @@ impl<'gctx> DrainState<'gctx> {
     /// Displays a final report of the warnings emitted by a particular job.
     fn report_warning_count(
         &mut self,
-        gctx: &GlobalContext,
+        runner: &mut BuildRunner<'_, '_>,
         id: JobId,
         rustc_workspace_wrapper: &Option<PathBuf>,
     ) {
-        let count = match self.warning_count.remove(&id) {
+        let gctx = runner.bcx.gctx;
+        let count = match self.warning_count.get(&id) {
             // An error could add an entry for a `Unit`
             // with 0 warnings but having fixable
             // warnings be disallowed
             Some(count) if count.total > 0 => count,
             None | Some(_) => return,
         };
+        runner.compilation.warning_count += count.total;
         let unit = &self.active[&id];
         let mut message = descriptive_pkg_name(&unit.pkg.name(), &unit.target, &unit.mode);
         message.push_str(" generated ");
@@ -1098,8 +1109,12 @@ impl<'gctx> DrainState<'gctx> {
         artifact: Artifact,
         build_runner: &mut BuildRunner<'_, '_>,
     ) -> CargoResult<()> {
-        if unit.mode.is_run_custom_build() && unit.show_warnings(build_runner.bcx.gctx) {
-            self.emit_warnings(None, unit, build_runner)?;
+        if unit.mode.is_run_custom_build() {
+            self.emit_log_messages(
+                unit,
+                build_runner,
+                unit.show_warnings(build_runner.bcx.gctx),
+            )?;
         }
         let unlocked = self.queue.finish(unit, &artifact);
         match artifact {

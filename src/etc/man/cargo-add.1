@@ -74,6 +74,13 @@ Specific commit to use when adding from git.
 \fIFilesystem path\fR <https://doc.rust\-lang.org/cargo/reference/specifying\-dependencies.html#specifying\-path\-dependencies> to local crate to add.
 .RE
 .sp
+\fB\-\-base\fR \fIbase\fR
+.RS 4
+The \fIpath base\fR <https://doc.rust\-lang.org/cargo/reference/unstable.html#path\-bases> to use when adding a local crate.
+.sp
+\fIUnstable (nightly\-only)\fR <https://doc.rust\-lang.org/cargo/reference/unstable.html#path\-bases>
+.RE
+.sp
 \fB\-\-registry\fR \fIregistry\fR
 .RS 4
 Name of the registry to use. Registry names are defined in \fICargo config
@@ -253,6 +260,20 @@ May also be specified with the \fBnet.offline\fR \fIconfig value\fR <https://doc
 \fB\-\-frozen\fR
 .RS 4
 Equivalent to specifying both \fB\-\-locked\fR and \fB\-\-offline\fR\&.
+.RE
+.sp
+\fB\-\-lockfile\-path\fR \fIPATH\fR
+.RS 4
+Changes the path of the lockfile from the default (\fB<workspace_root>/Cargo.lock\fR) to \fIPATH\fR\&. \fIPATH\fR must end with
+\fBCargo.lock\fR (e.g. \fB\-\-lockfile\-path /tmp/temporary\-lockfile/Cargo.lock\fR). Note that providing
+\fB\-\-lockfile\-path\fR will ignore existing lockfile at the default path, and instead will
+either use the lockfile from \fIPATH\fR, or write a new lockfile into the provided \fIPATH\fR if it doesn\[cq]t exist.
+This flag can be used to run most commands in read\-only directories, writing lockfile into the provided \fIPATH\fR\&.
+.sp
+This option is only available on the \fInightly
+channel\fR <https://doc.rust\-lang.org/book/appendix\-07\-nightly\-rust.html> and
+requires the \fB\-Z unstable\-options\fR flag to enable (see
+\fI#14421\fR <https://github.com/rust\-lang/cargo/issues/14421>).
 .RE
 .SS "Common Options"
 .sp

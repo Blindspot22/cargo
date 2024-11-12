@@ -121,6 +121,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt::{self, Write};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{bail, Error};
@@ -513,6 +514,9 @@ features! {
 
     /// Allow multiple packages to participate in the same API namespace
     (unstable, open_namespaces, "", "reference/unstable.html#open-namespaces"),
+
+    /// Allow paths that resolve relatively to a base specified in the config.
+    (unstable, path_bases, "", "reference/unstable.html#path-bases"),
 }
 
 /// Status and metadata for a single unstable feature.
@@ -757,6 +761,7 @@ unstable_cli_options!(
     build_std: Option<Vec<String>>  = ("Enable Cargo to compile the standard library itself as part of a crate graph compilation"),
     build_std_features: Option<Vec<String>>  = ("Configure features enabled for the standard library itself when building the standard library"),
     cargo_lints: bool = ("Enable the `[lints.cargo]` table"),
+    checksum_freshness: bool = ("Use a checksum to determine if output is fresh rather than filesystem mtime"),
     codegen_backend: bool = ("Enable the `codegen-backend` option in profiles in .cargo/config.toml file"),
     config_include: bool = ("Enable the `include` key in config files"),
     direct_minimal_versions: bool = ("Resolve minimal dependency versions instead of maximum (direct dependencies only)"),
@@ -779,6 +784,7 @@ unstable_cli_options!(
     profile_rustflags: bool = ("Enable the `rustflags` option in profiles in .cargo/config.toml file"),
     public_dependency: bool = ("Respect a dependency's `public` field in Cargo.toml to control public/private dependencies"),
     publish_timeout: bool = ("Enable the `publish.timeout` key in .cargo/config.toml file"),
+    root_dir: Option<PathBuf> = ("Set the root directory relative to which paths are printed (defaults to workspace root)"),
     rustdoc_map: bool = ("Allow passing external documentation mappings to rustdoc"),
     rustdoc_scrape_examples: bool = ("Allows Rustdoc to scrape code examples from reverse-dependencies"),
     script: bool = ("Enable support for single-file, `.rs` packages"),
@@ -787,6 +793,7 @@ unstable_cli_options!(
     target_applies_to_host: bool = ("Enable the `target-applies-to-host` key in the .cargo/config.toml file"),
     trim_paths: bool = ("Enable the `trim-paths` option in profiles"),
     unstable_options: bool = ("Allow the usage of unstable options"),
+    warnings: bool = ("Allow use of the build.warnings config key"),
 );
 
 const STABILIZED_COMPILE_PROGRESS: &str = "The progress bar is now always \
@@ -1283,13 +1290,16 @@ impl CliUnstable {
             "profile-rustflags" => self.profile_rustflags = parse_empty(k, v)?,
             "trim-paths" => self.trim_paths = parse_empty(k, v)?,
             "publish-timeout" => self.publish_timeout = parse_empty(k, v)?,
+            "root-dir" => self.root_dir = v.map(|v| v.into()),
             "rustdoc-map" => self.rustdoc_map = parse_empty(k, v)?,
             "rustdoc-scrape-examples" => self.rustdoc_scrape_examples = parse_empty(k, v)?,
             "separate-nightlies" => self.separate_nightlies = parse_empty(k, v)?,
+            "checksum-freshness" => self.checksum_freshness = parse_empty(k, v)?,
             "skip-rustdoc-fingerprint" => self.skip_rustdoc_fingerprint = parse_empty(k, v)?,
             "script" => self.script = parse_empty(k, v)?,
             "target-applies-to-host" => self.target_applies_to_host = parse_empty(k, v)?,
             "unstable-options" => self.unstable_options = parse_empty(k, v)?,
+            "warnings" => self.warnings = parse_empty(k, v)?,
             _ => bail!("\
             unknown `-Z` flag specified: {k}\n\n\
             For available unstable features, see https://doc.rust-lang.org/nightly/cargo/reference/unstable.html\n\

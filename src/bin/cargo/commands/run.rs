@@ -38,6 +38,7 @@ pub fn cli() -> Command {
         .arg_target_triple("Build for the target triple")
         .arg_target_dir()
         .arg_manifest_path()
+        .arg_lockfile_path()
         .arg_ignore_rust_version()
         .arg_unit_graph()
         .arg_timings()
@@ -89,9 +90,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 /// See also `util/toml/mod.rs`s `is_embedded`
 pub fn is_manifest_command(arg: &str) -> bool {
     let path = Path::new(arg);
-    1 < path.components().count()
-        || path.extension() == Some(OsStr::new("rs"))
-        || path.file_name() == Some(OsStr::new("Cargo.toml"))
+    1 < path.components().count() || path.extension() == Some(OsStr::new("rs"))
 }
 
 pub fn exec_manifest_command(gctx: &mut GlobalContext, cmd: &str, args: &[OsString]) -> CliResult {
@@ -172,12 +171,8 @@ pub fn exec_manifest_command(gctx: &mut GlobalContext, cmd: &str, args: &[OsStri
 
     let manifest_path = root_manifest(Some(manifest_path), gctx)?;
 
-    // Treat `cargo foo.rs` like `cargo install --path foo` and re-evaluate the config based on the
-    // location where the script resides, rather than the environment from where it's being run.
-    let parent_path = manifest_path
-        .parent()
-        .expect("a file should always have a parent");
-    gctx.reload_rooted_at(parent_path)?;
+    // Reload to cargo home.
+    gctx.reload_rooted_at(gctx.home().clone().into_path_unlocked())?;
 
     let mut ws = Workspace::new(&manifest_path, gctx)?;
     if gctx.cli_unstable().avoid_dev_deps {

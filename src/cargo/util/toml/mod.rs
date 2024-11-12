@@ -1,5 +1,5 @@
 use annotate_snippets::{Level, Snippet};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -9,8 +9,10 @@ use crate::core::summary::MissingDependencyError;
 use crate::AlreadyPrintedError;
 use anyhow::{anyhow, bail, Context as _};
 use cargo_platform::Platform;
-use cargo_util::paths::{self, normalize_path};
-use cargo_util_schemas::manifest::{self, TomlManifest};
+use cargo_util::paths;
+use cargo_util_schemas::manifest::{
+    self, PackageName, PathBaseName, TomlDependency, TomlDetailedDependency, TomlManifest,
+};
 use cargo_util_schemas::manifest::{RustVersion, StringOrBool};
 use itertools::Itertools;
 use lazycell::LazyCell;
@@ -22,7 +24,6 @@ use crate::core::compiler::{CompileKind, CompileTarget};
 use crate::core::dependency::{Artifact, ArtifactTarget, DepKind};
 use crate::core::manifest::{ManifestMetadata, TargetSourcePath};
 use crate::core::resolver::ResolveBehavior;
-use crate::core::FeatureValue::Dep;
 use crate::core::{find_workspace_root, resolve_relative_path, CliUnstable, FeatureValue};
 use crate::core::{Dependency, Manifest, Package, PackageId, Summary, Target};
 use crate::core::{Edition, EitherManifest, Feature, Features, VirtualManifest, Workspace};
@@ -296,7 +297,7 @@ fn normalize_toml(
         features: None,
         target: None,
         replace: original_toml.replace.clone(),
-        patch: original_toml.patch.clone(),
+        patch: None,
         workspace: original_toml.workspace.clone(),
         badges: None,
         lints: None,
@@ -310,6 +311,7 @@ fn normalize_toml(
         inherit_cell
             .try_borrow_with(|| load_inheritable_fields(gctx, manifest_file, &workspace_config))
     };
+    let workspace_root = || inherit().map(|fields| fields.ws_root().as_path());
 
     if let Some(original_package) = original_toml.package() {
         let package_name = &original_package.name;
@@ -331,6 +333,7 @@ fn normalize_toml(
             package_root,
             &original_package.name,
             edition,
+            original_package.autolib,
             warnings,
         )?;
         normalized_toml.bin = Some(targets::normalize_bins(
@@ -368,28 +371,14 @@ fn normalize_toml(
             errors,
         )?);
 
-        let activated_opt_deps = normalized_toml
-            .features
-            .as_ref()
-            .map(|map| {
-                map.values()
-                    .flatten()
-                    .filter_map(|f| match FeatureValue::new(InternedString::new(f)) {
-                        Dep { dep_name } => Some(dep_name.as_str()),
-                        _ => None,
-                    })
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
-
         normalized_toml.dependencies = normalize_dependencies(
             gctx,
             edition,
             &features,
             original_toml.dependencies.as_ref(),
-            &activated_opt_deps,
             None,
             &inherit,
+            &workspace_root,
             package_root,
             warnings,
         )?;
@@ -407,9 +396,9 @@ fn normalize_toml(
             edition,
             &features,
             original_toml.dev_dependencies(),
-            &activated_opt_deps,
             Some(DepKind::Development),
             &inherit,
+            &workspace_root,
             package_root,
             warnings,
         )?;
@@ -427,9 +416,9 @@ fn normalize_toml(
             edition,
             &features,
             original_toml.build_dependencies(),
-            &activated_opt_deps,
             Some(DepKind::Build),
             &inherit,
+            &workspace_root,
             package_root,
             warnings,
         )?;
@@ -440,9 +429,9 @@ fn normalize_toml(
                 edition,
                 &features,
                 platform.dependencies.as_ref(),
-                &activated_opt_deps,
                 None,
                 &inherit,
+                &workspace_root,
                 package_root,
                 warnings,
             )?;
@@ -460,9 +449,9 @@ fn normalize_toml(
                 edition,
                 &features,
                 platform.dev_dependencies(),
-                &activated_opt_deps,
                 Some(DepKind::Development),
                 &inherit,
+                &workspace_root,
                 package_root,
                 warnings,
             )?;
@@ -480,9 +469,9 @@ fn normalize_toml(
                 edition,
                 &features,
                 platform.build_dependencies(),
-                &activated_opt_deps,
                 Some(DepKind::Build),
                 &inherit,
+                &workspace_root,
                 package_root,
                 warnings,
             )?;
@@ -499,6 +488,13 @@ fn normalize_toml(
         }
         normalized_toml.target = (!normalized_target.is_empty()).then_some(normalized_target);
 
+        normalized_toml.patch = normalize_patch(
+            gctx,
+            original_toml.patch.as_ref(),
+            &workspace_root,
+            features,
+        )?;
+
         let normalized_lints = original_toml
             .lints
             .clone()
@@ -511,12 +507,43 @@ fn normalize_toml(
 
         normalized_toml.badges = original_toml.badges.clone();
     } else {
-        for field in original_toml.requires_package() {
+        if let Some(field) = original_toml.requires_package().next() {
             bail!("this virtual manifest specifies a `{field}` section, which is not allowed");
         }
     }
 
     Ok(normalized_toml)
+}
+
+fn normalize_patch<'a>(
+    gctx: &GlobalContext,
+    original_patch: Option<&BTreeMap<String, BTreeMap<PackageName, TomlDependency>>>,
+    workspace_root: &dyn Fn() -> CargoResult<&'a Path>,
+    features: &Features,
+) -> CargoResult<Option<BTreeMap<String, BTreeMap<PackageName, TomlDependency>>>> {
+    if let Some(patch) = original_patch {
+        let mut normalized_patch = BTreeMap::new();
+        for (name, packages) in patch {
+            let mut normalized_packages = BTreeMap::new();
+            for (pkg, dep) in packages {
+                let dep = if let TomlDependency::Detailed(dep) = dep {
+                    let mut dep = dep.clone();
+                    normalize_path_dependency(gctx, &mut dep, workspace_root, features)
+                        .with_context(|| {
+                            format!("resolving path for patch of ({pkg}) for source ({name})")
+                        })?;
+                    TomlDependency::Detailed(dep)
+                } else {
+                    dep.clone()
+                };
+                normalized_packages.insert(pkg.clone(), dep);
+            }
+            normalized_patch.insert(name.clone(), normalized_packages);
+        }
+        Ok(Some(normalized_patch))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tracing::instrument(skip_all)]
@@ -577,6 +604,7 @@ fn normalize_package_toml<'a>(
             .map(manifest::InheritableField::Value),
         workspace: original_package.workspace.clone(),
         im_a_teapot: original_package.im_a_teapot.clone(),
+        autolib: Some(false),
         autobins: Some(false),
         autoexamples: Some(false),
         autotests: Some(false),
@@ -707,9 +735,9 @@ fn normalize_dependencies<'a>(
     edition: Edition,
     features: &Features,
     orig_deps: Option<&BTreeMap<manifest::PackageName, manifest::InheritableDependency>>,
-    activated_opt_deps: &HashSet<&str>,
     kind: Option<DepKind>,
     inherit: &dyn Fn() -> CargoResult<&'a InheritableFields>,
+    workspace_root: &dyn Fn() -> CargoResult<&'a Path>,
     package_root: &Path,
     warnings: &mut Vec<String>,
 ) -> CargoResult<Option<BTreeMap<manifest::PackageName, manifest::InheritableDependency>>> {
@@ -738,12 +766,8 @@ fn normalize_dependencies<'a>(
                 warnings,
             )?;
             if d.public.is_some() {
-                let public_feature = features.require(Feature::public_dependency());
-                let with_public_feature = public_feature.is_ok();
+                let with_public_feature = features.require(Feature::public_dependency()).is_ok();
                 let with_z_public = gctx.cli_unstable().public_dependency;
-                if !with_public_feature && (!with_z_public && !gctx.nightly_features_allowed) {
-                    public_feature?;
-                }
                 if matches!(kind, None) {
                     if !with_public_feature && !with_z_public {
                         d.public = None;
@@ -768,22 +792,33 @@ fn normalize_dependencies<'a>(
                     }
                 }
             }
+            normalize_path_dependency(gctx, d, workspace_root, features)
+                .with_context(|| format!("resolving path dependency {name_in_toml}"))?;
         }
 
-        // if the dependency is not optional, it is always used
-        // if the dependency is optional and activated, it is used
-        // if the dependency is optional and not activated, it is not used
-        let is_dep_activated =
-            !resolved.is_optional() || activated_opt_deps.contains(name_in_toml.as_str());
-        // If the edition is less than 2024, we don't need to check for unused optional dependencies
-        if edition < Edition::Edition2024 || is_dep_activated {
-            deps.insert(
-                name_in_toml.clone(),
-                manifest::InheritableDependency::Value(resolved.clone()),
-            );
-        }
+        deps.insert(
+            name_in_toml.clone(),
+            manifest::InheritableDependency::Value(resolved.clone()),
+        );
     }
     Ok(Some(deps))
+}
+
+fn normalize_path_dependency<'a>(
+    gctx: &GlobalContext,
+    detailed_dep: &mut TomlDetailedDependency,
+    workspace_root: &dyn Fn() -> CargoResult<&'a Path>,
+    features: &Features,
+) -> CargoResult<()> {
+    if let Some(base) = detailed_dep.base.take() {
+        if let Some(path) = detailed_dep.path.as_mut() {
+            let new_path = lookup_path_base(&base, gctx, workspace_root, features)?.join(&path);
+            *path = new_path.to_str().unwrap().to_string();
+        } else {
+            bail!("`base` can only be used with path dependencies");
+        }
+    }
+    Ok(())
 }
 
 fn load_inheritable_fields(
@@ -901,13 +936,17 @@ impl InheritableFields {
         };
         let mut dep = dep.clone();
         if let manifest::TomlDependency::Detailed(detailed) = &mut dep {
-            if let Some(rel_path) = &detailed.path {
-                detailed.path = Some(resolve_relative_path(
-                    name,
-                    self.ws_root(),
-                    package_root,
-                    rel_path,
-                )?);
+            if detailed.base.is_none() {
+                // If this is a path dependency without a base, then update the path to be relative
+                // to the workspace root instead.
+                if let Some(rel_path) = &detailed.path {
+                    detailed.path = Some(resolve_relative_path(
+                        name,
+                        self.ws_root(),
+                        package_root,
+                        rel_path,
+                    )?);
+                }
             }
         }
         Ok(dep)
@@ -1086,7 +1125,7 @@ fn deprecated_ws_default_features(
 }
 
 #[tracing::instrument(skip_all)]
-fn to_real_manifest(
+pub fn to_real_manifest(
     contents: String,
     document: toml_edit::ImDocument<String>,
     original_toml: manifest::TomlManifest,
@@ -1131,7 +1170,7 @@ fn to_real_manifest(
     {
         let edition: Edition = edition
             .parse()
-            .with_context(|| "failed to parse the `edition` key")?;
+            .context("failed to parse the `edition` key")?;
         if let Some(pkg_msrv) = &rust_version {
             if let Some(edition_msrv) = edition.first_version() {
                 let edition_msrv = RustVersion::try_from(edition_msrv).unwrap();
@@ -1379,7 +1418,7 @@ fn to_real_manifest(
             .normalized_lints()
             .expect("previously normalized")
             .unwrap_or(&default),
-    );
+    )?;
 
     let metadata = ManifestMetadata {
         description: normalized_package
@@ -1853,8 +1892,13 @@ fn patch(
                 .or_else(|_| toml_url.into_url())
                 .with_context(|| {
                     format!(
-                        "[patch] entry `{}` should be a URL or registry name",
-                        toml_url
+                        "[patch] entry `{}` should be a URL or registry name{}",
+                        toml_url,
+                        if toml_url == "crates" {
+                            "\nFor crates.io, use [patch.crates-io] (with a dash)"
+                        } else {
+                            ""
+                        }
                     )
                 })?,
         };
@@ -2148,6 +2192,33 @@ fn to_dependency_source_id<P: ResolveToPath + Clone>(
             SourceId::for_registry(&url)
         }
         (None, None, None, None) => SourceId::crates_io(manifest_ctx.gctx),
+    }
+}
+
+pub(crate) fn lookup_path_base<'a>(
+    base: &PathBaseName,
+    gctx: &GlobalContext,
+    workspace_root: &dyn Fn() -> CargoResult<&'a Path>,
+    features: &Features,
+) -> CargoResult<PathBuf> {
+    features.require(Feature::path_bases())?;
+
+    // HACK: The `base` string is user controlled, but building the path is safe from injection
+    // attacks since the `PathBaseName` type restricts the characters that can be used to exclude `.`
+    let base_key = format!("path-bases.{base}");
+
+    // Look up the relevant base in the Config and use that as the root.
+    if let Some(path_bases) = gctx.get::<Option<ConfigRelativePath>>(&base_key)? {
+        Ok(path_bases.resolve_path(gctx))
+    } else {
+        // Otherwise, check the built-in bases.
+        match base.as_str() {
+            "workspace" => Ok(workspace_root()?.to_path_buf()),
+            _ => bail!(
+                "path base `{base}` is undefined. \
+            You must add an entry for `{base}` in the Cargo configuration [path-bases] table."
+            ),
+        }
     }
 }
 
@@ -2451,7 +2522,7 @@ switch to nightly channel you can pass
     warnings.push(message);
 }
 
-fn lints_to_rustflags(lints: &manifest::TomlLints) -> Vec<String> {
+fn lints_to_rustflags(lints: &manifest::TomlLints) -> CargoResult<Vec<String>> {
     let mut rustflags = lints
         .iter()
         // We don't want to pass any of the `cargo` lints to `rustc`
@@ -2481,7 +2552,30 @@ fn lints_to_rustflags(lints: &manifest::TomlLints) -> Vec<String> {
         })
         .collect::<Vec<_>>();
     rustflags.sort();
-    rustflags.into_iter().map(|(_, _, option)| option).collect()
+
+    let mut rustflags: Vec<_> = rustflags.into_iter().map(|(_, _, option)| option).collect();
+
+    // Also include the custom arguments specified in `[lints.rust.unexpected_cfgs.check_cfg]`
+    if let Some(rust_lints) = lints.get("rust") {
+        if let Some(unexpected_cfgs) = rust_lints.get("unexpected_cfgs") {
+            if let Some(config) = unexpected_cfgs.config() {
+                if let Some(check_cfg) = config.get("check-cfg") {
+                    if let Ok(check_cfgs) = toml::Value::try_into::<Vec<String>>(check_cfg.clone())
+                    {
+                        for check_cfg in check_cfgs {
+                            rustflags.push("--check-cfg".to_string());
+                            rustflags.push(check_cfg);
+                        }
+                    // error about `check-cfg` not being a list-of-string
+                    } else {
+                        bail!("`lints.rust.unexpected_cfgs.check-cfg` must be a list of string");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(rustflags)
 }
 
 fn emit_diagnostic(
@@ -2618,7 +2712,7 @@ fn prepare_toml_for_publish(
     let mut package = me.package().unwrap().clone();
     package.workspace = None;
     if let Some(StringOrBool::String(path)) = &package.build {
-        let path = paths::normalize_path(Path::new(path));
+        let path = Path::new(path).to_path_buf();
         let included = packaged_files.map(|i| i.contains(&path)).unwrap_or(true);
         let build = if included {
             let path = path
@@ -2865,6 +2959,7 @@ fn prepare_toml_for_publish(
                 let mut d = d.clone();
                 // Path dependencies become crates.io deps.
                 d.path.take();
+                d.base.take();
                 // Same with git dependencies.
                 d.git.take();
                 d.branch.take();
@@ -2889,7 +2984,7 @@ fn prepare_toml_for_publish(
     }
 }
 
-fn prepare_targets_for_publish(
+pub fn prepare_targets_for_publish(
     targets: Option<&Vec<manifest::TomlTarget>>,
     packaged_files: Option<&[PathBuf]>,
     context: &str,
@@ -2915,14 +3010,14 @@ fn prepare_targets_for_publish(
     }
 }
 
-fn prepare_target_for_publish(
+pub fn prepare_target_for_publish(
     target: &manifest::TomlTarget,
     packaged_files: Option<&[PathBuf]>,
     context: &str,
     gctx: &GlobalContext,
 ) -> CargoResult<Option<manifest::TomlTarget>> {
     let path = target.path.as_ref().expect("previously normalized");
-    let path = normalize_path(&path.0);
+    let path = &path.0;
     if let Some(packaged_files) = packaged_files {
         if !packaged_files.contains(&path) {
             let name = target.name.as_ref().expect("previously normalized");
@@ -2935,7 +3030,7 @@ fn prepare_target_for_publish(
     }
 
     let mut target = target.clone();
-    let path = normalize_path_sep(path, context)?;
+    let path = normalize_path_sep(path.to_path_buf(), context)?;
     target.path = Some(manifest::PathValue(path.into()));
 
     Ok(Some(target))
@@ -2950,7 +3045,7 @@ fn normalize_path_sep(path: PathBuf, context: &str) -> CargoResult<PathBuf> {
     Ok(path.into())
 }
 
-fn normalize_path_string_sep(path: String) -> String {
+pub fn normalize_path_string_sep(path: String) -> String {
     if std::path::MAIN_SEPARATOR != '/' {
         path.replace(std::path::MAIN_SEPARATOR, "/")
     } else {

@@ -100,7 +100,7 @@ fn cargo_test_release() {
 
     p.cargo("test -v --release")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] `rustc [..]-C opt-level=3 [..]`
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
@@ -396,7 +396,7 @@ fn cargo_test_failing_test_in_bin() {
 
             #[test]
             fn test_hello() {
-                assert_eq!(hello(), "nope")
+                assert_eq!(hello(), "nope", "NOPE!")
             }
             "#,
         )
@@ -420,24 +420,7 @@ hello
 [ERROR] test failed, to rerun pass `--bin foo`
 
 "#]])
-        .with_stdout_data(
-            str![[r#"
-running 1 test
-test test_hello ... FAILED
-
-failures:
-
----- test_hello stdout ----
-thread 'test_hello' panicked at src/main.rs:12:17:
-assertion `left == right` failed
-  left: "hello"
- right: "nope"
-failures:
-    test_hello
-...
-"#]]
-            .unordered(),
-        )
+        .with_stdout_data("...\n[..]NOPE![..]\n...")
         .with_status(101)
         .run();
 }
@@ -449,7 +432,7 @@ fn cargo_test_failing_test_in_test() {
         .file("src/main.rs", r#"pub fn main() { println!("hello"); }"#)
         .file(
             "tests/footest.rs",
-            "#[test] fn test_hello() { assert!(false) }",
+            r#"#[test] fn test_hello() { assert!(false, "FALSE!") }"#,
         )
         .build();
 
@@ -476,17 +459,13 @@ hello
             str![[r#"
 ...
 running 0 tests
+...
 running 1 test
 test test_hello ... FAILED
-
-failures:
-
----- test_hello stdout ----
-thread 'test_hello' panicked at tests/footest.rs:1:27:
-assertion failed: false
-failures:
-    test_hello
 ...
+[..]FALSE![..]
+...
+
 "#]]
             .unordered(),
         )
@@ -498,7 +477,10 @@ failures:
 fn cargo_test_failing_test_in_lib() {
     let p = project()
         .file("Cargo.toml", &basic_lib_manifest("foo"))
-        .file("src/lib.rs", "#[test] fn test_hello() { assert!(false) }")
+        .file(
+            "src/lib.rs",
+            r#"#[test] fn test_hello() { assert!(false, "FALSE!") }"#,
+        )
         .build();
 
     p.cargo("test")
@@ -512,15 +494,8 @@ fn cargo_test_failing_test_in_lib() {
         .with_stdout_data(str![[r#"
 ...
 test test_hello ... FAILED
-
-failures:
-
----- test_hello stdout ----
-thread 'test_hello' panicked at src/lib.rs:1:27:
-assertion failed: false
 ...
-failures:
-    test_hello
+[..]FALSE![..]
 ...
 "#]])
         .with_status(101)
@@ -635,7 +610,7 @@ fn test_with_deep_lib_dep() {
 
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1480,7 +1455,7 @@ fn test_dylib() {
 
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1834,7 +1809,6 @@ test test_in_bench ... ok
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn test_run_implicit_example_target() {
     let prj = project()
@@ -1922,7 +1896,6 @@ fn test_run_implicit_example_target() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn test_filtered_excludes_compiling_examples() {
     let p = project()
@@ -2098,7 +2071,7 @@ fn selective_testing() {
     println!("d1");
     p.cargo("test -p d1")
         .with_stderr_data(str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 [COMPILING] d1 v0.0.1 ([ROOT]/foo/d1)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] unittests src/lib.rs (target/debug/deps/d1-[HASH][EXE])
@@ -2328,7 +2301,7 @@ fn selective_testing_with_docs() {
 
     p.cargo("test -p d1")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] d1 v0.0.1 ([ROOT]/foo/d1)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] unittests d1.rs (target/debug/deps/d1-[HASH][EXE])
@@ -2437,7 +2410,7 @@ fn example_with_dev_dep() {
     p.cargo("test -v")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [RUNNING] `rustc --crate-name foo [..]`
@@ -2744,7 +2717,7 @@ fn cyclic_dev_dep_doc_test() {
         .build();
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -3023,7 +2996,7 @@ fn selective_test_optional_dep() {
 
     p.cargo("test -v --no-run --features a -p a")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [RUNNING] `rustc [..] a/src/lib.rs [..]`
 [RUNNING] `rustc [..] a/src/lib.rs [..]`
@@ -3621,7 +3594,6 @@ test b ... ok
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn test_virtual_manifest_one_project() {
     let p = project()
@@ -3644,7 +3616,6 @@ fn test_virtual_manifest_one_project() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn test_virtual_manifest_glob() {
     let p = project()
@@ -3897,9 +3868,9 @@ fn doctest_and_registry() {
     p.cargo("test --workspace -v").run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn cargo_test_env() {
+    let rustc_host = rustc_host();
     let src = format!(
         r#"
         #![crate_type = "rlib"]
@@ -3918,9 +3889,18 @@ fn cargo_test_env() {
         .file("src/lib.rs", &src)
         .build();
 
-    let cargo = cargo_exe().canonicalize().unwrap();
+    let cargo = format!(
+        "{}[EXE]",
+        cargo_exe()
+            .canonicalize()
+            .unwrap()
+            .with_extension("")
+            .to_str()
+            .unwrap()
+            .replace(rustc_host, "[HOST_TARGET]")
+    );
     p.cargo("test --lib -- --nocapture")
-        .with_stderr_contains(cargo.to_str().unwrap())
+        .with_stderr_contains(cargo)
         .with_stdout_data(str![[r#"
 ...
 test env_test ... ok
@@ -3933,11 +3913,18 @@ test env_test ... ok
         .unwrap()
         .canonicalize()
         .unwrap();
-    let rustc = rustc.to_str().unwrap();
+    let stderr_rustc = format!(
+        "{}[EXE]",
+        rustc
+            .with_extension("")
+            .to_str()
+            .unwrap()
+            .replace(rustc_host, "[HOST_TARGET]")
+    );
     p.cargo("test --lib -- --nocapture")
         // we use rustc since $CARGO is only used if it points to a path that exists
         .env(cargo::CARGO_ENV, rustc)
-        .with_stderr_contains(rustc)
+        .with_stderr_contains(stderr_rustc)
         .with_stdout_data(str![[r#"
 ...
 test env_test ... ok
@@ -4254,7 +4241,6 @@ fn test_hint_workspace_virtual() {
     p.cargo("test")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 3 packages to latest compatible versions
 [COMPILING] c v0.1.0 ([ROOT]/foo/c)
 [COMPILING] a v0.1.0 ([ROOT]/foo/a)
 [COMPILING] b v0.1.0 ([ROOT]/foo/b)
@@ -4362,7 +4348,6 @@ fn test_hint_workspace_nonvirtual() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn json_artifact_includes_test_flag() {
     // Verify that the JSON artifact output includes `test` flag.
@@ -4423,7 +4408,6 @@ fn json_artifact_includes_test_flag() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn json_artifact_includes_executable_for_library_tests() {
     let p = project()
@@ -4471,7 +4455,6 @@ fn json_artifact_includes_executable_for_library_tests() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn json_artifact_includes_executable_for_integration_tests() {
     let p = project()
@@ -4588,7 +4571,6 @@ fn doctest_skip_staticlib() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn can_not_mix_doc_tests_and_regular_tests() {
     let p = project()
@@ -4753,7 +4735,7 @@ fn test_dep_with_dev() {
     p.cargo("test -p bar")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [ERROR] package `bar` cannot be tested because it requires dev-dependencies and is not a member of the workspace
 
 "#]])
@@ -5440,7 +5422,6 @@ Caused by:
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn nonzero_exit_status() {
     // Tests for nonzero exit codes from tests.
@@ -5526,12 +5507,11 @@ Caused by:
         .run();
 
     p.cargo("test --no-fail-fast -- --nocapture")
-        .env_remove("RUST_BACKTRACE")
         .with_stderr_does_not_contain(
             "test exited abnormally; to see the full output pass --nocapture to the harness.",
         )
         .with_stderr_data(str![[r#"
-thread 't' panicked at tests/t1.rs:3:26:
+[..]thread [..]panicked [..] tests/t1.rs[..]
 [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 Caused by:
   process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE] --nocapture` ([EXIT_STATUS]: 4)
@@ -5555,7 +5535,7 @@ fn cargo_test_print_env_verbose() {
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `[..]CARGO_MANIFEST_DIR=[ROOT]/foo[..] [ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
 [DOCTEST] foo
-[RUNNING] `[..]CARGO_MANIFEST_DIR=[ROOT]/foo[..] rustdoc --edition=2015 --crate-type lib --crate-name foo[..]`
+[RUNNING] `[..]CARGO_MANIFEST_DIR=[ROOT]/foo[..] rustdoc --edition=2015 --crate-type lib --color auto --crate-name foo[..]`
 
 "#]]).run();
 }

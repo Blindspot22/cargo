@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use url::Url;
 
 use crate::util::style;
+use crate::util::style::LITERAL;
 use crate::util::truncate_with_ellipsis;
 use crate::CargoResult;
 use crate::GlobalContext;
@@ -21,7 +22,7 @@ pub fn search(
     limit: u32,
 ) -> CargoResult<()> {
     let source_ids = super::get_source_id(gctx, reg_or_index.as_ref())?;
-    let mut registry =
+    let (mut registry, _) =
         super::registry(gctx, &source_ids, None, reg_or_index.as_ref(), false, None)?;
     let (crates, total_crates) = registry.search(query, limit).with_context(|| {
         format!(
@@ -85,6 +86,13 @@ pub fn search(
             total_crates - limit,
             extra
         );
+    }
+
+    if total_crates > 0 {
+        let literal = LITERAL;
+        shell.note(format_args!(
+            "to learn more about a package, run `{literal}cargo info <name>{literal:#}`",
+        ))?;
     }
 
     Ok(())

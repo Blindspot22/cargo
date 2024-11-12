@@ -107,7 +107,7 @@ fn simple() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] bar v0.1.0
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -147,7 +147,7 @@ fn simple_install() {
     cargo_process("install bar")
         .with_stderr_data(str![[r#"
 [INSTALLING] bar v0.1.0
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] foo v0.0.1
 [COMPILING] bar v0.1.0
 [FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
@@ -199,7 +199,7 @@ Caused by:
   no matching package found
   searched package name: `baz`
   perhaps you meant:      bar or foo
-  location searched: registry `crates-io`
+  location searched: directory source `[ROOT]/index` (which is replacing registry `crates-io`)
   required by package `bar v0.1.0`
 
 "#]])
@@ -241,7 +241,7 @@ fn install_without_feature_dep() {
     cargo_process("install bar")
         .with_stderr_data(str![[r#"
 [INSTALLING] bar v0.1.0
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] foo v0.0.1
 [COMPILING] bar v0.1.0
 [FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
@@ -283,7 +283,7 @@ fn not_there() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [ERROR] no matching package named `bar` found
-location searched: registry `crates-io`
+location searched: directory source `[ROOT]/index` (which is replacing registry `crates-io`)
 required by package `foo v0.1.0 ([ROOT]/foo)`
 
 "#]])
@@ -328,8 +328,8 @@ fn multiple() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
-[ADDING] bar v0.1.0 (latest: v0.2.0)
+[LOCKING] 1 package to latest compatible version
+[ADDING] bar v0.1.0 (available: v0.2.0)
 [CHECKING] bar v0.1.0
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -367,7 +367,7 @@ fn crates_io_then_directory() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
 [CHECKING] bar v0.1.0
@@ -476,7 +476,7 @@ fn bad_file_checksum() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [ERROR] the listed checksum of `[ROOT]/index/bar/src/lib.rs` has changed:
 expected: [..]
 actual:   [..]
@@ -734,7 +734,7 @@ fn workspace_different_locations() {
     p.cargo("check")
         .cwd("bar")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -782,5 +782,85 @@ Caused by:
 
 "#]])
         .with_status(101)
+        .run();
+}
+
+#[cargo_test]
+fn root_dir_diagnostics() {
+    let p = ProjectBuilder::new(paths::root())
+        .no_manifest() // we are placing it in a different dir
+        .file(
+            "ws_root/Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+                authors = []
+            "#,
+        )
+        .file("ws_root/src/lib.rs", "invalid;")
+        .build();
+
+    // Crucially, the rustc error message below says `ws_root/...`, i.e.
+    // it is relative to our fake home, not to the workspace root.
+    p.cargo("check")
+        .arg("-Zroot-dir=.")
+        .arg("--manifest-path=ws_root/Cargo.toml")
+        .masquerade_as_nightly_cargo(&["-Zroot-dir"])
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/ws_root)
+[ERROR] [..]
+ --> ws_root/src/lib.rs:1:8
+  |
+1 | invalid;
+  | [..]
+
+[ERROR] could not compile `foo` (lib) due to 1 previous error
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn root_dir_file_macro() {
+    let p = ProjectBuilder::new(paths::root())
+        .no_manifest() // we are placing it in a different dir
+        .file(
+            "ws_root/Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+                authors = []
+            "#,
+        )
+        .file(
+            "ws_root/src/main.rs",
+            r#"fn main() { println!("{}", file!()); }"#,
+        )
+        .build();
+
+    // Crucially, the path is relative to our fake home, not to the workspace root.
+    p.cargo("run")
+        .arg("-Zroot-dir=.")
+        .arg("--manifest-path=ws_root/Cargo.toml")
+        .masquerade_as_nightly_cargo(&["-Zroot-dir"])
+        .with_stdout_data(str![[r#"
+ws_root/src/main.rs
+
+"#]])
+        .run();
+    // Try again with an absolute path for `root-dir`.
+    p.cargo("run")
+        .arg(format!("-Zroot-dir={}", p.root().display()))
+        .arg("--manifest-path=ws_root/Cargo.toml")
+        .masquerade_as_nightly_cargo(&["-Zroot-dir"])
+        .with_stdout_data(str![[r#"
+ws_root/src/main.rs
+
+"#]])
         .run();
 }

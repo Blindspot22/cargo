@@ -5,6 +5,7 @@
 //! ```no_run
 //! use cargo_test_support::registry::Package;
 //! use cargo_test_support::project;
+//! use cargo_test_support::str;
 //!
 //! // Publish package "a" depending on "b".
 //! Package::new("a", "1.0.0")
@@ -38,7 +39,7 @@
 //!     "#)
 //!     .build();
 //!
-//! p.cargo("run").with_stdout("24").run();
+//! p.cargo("run").with_stdout_data(str!["24"]).run();
 //! ```
 
 use crate::git::repo;
@@ -570,6 +571,8 @@ pub struct Package {
     local: bool,
     alternative: bool,
     invalid_json: bool,
+    edition: Option<String>,
+    resolver: Option<String>,
     proc_macro: bool,
     links: Option<String>,
     rust_version: Option<String>,
@@ -1249,6 +1252,8 @@ impl Package {
             local: false,
             alternative: false,
             invalid_json: false,
+            edition: None,
+            resolver: None,
             proc_macro: false,
             links: None,
             rust_version: None,
@@ -1384,6 +1389,18 @@ impl Package {
         self
     }
 
+    /// Specifies `package.edition`
+    pub fn edition(&mut self, edition: &str) -> &mut Package {
+        self.edition = Some(edition.to_owned());
+        self
+    }
+
+    /// Specifies `package.resolver`
+    pub fn resolver(&mut self, resolver: &str) -> &mut Package {
+        self.resolver = Some(resolver.to_owned());
+        self
+    }
+
     /// Specifies whether or not this is a proc macro.
     pub fn proc_macro(&mut self, proc_macro: bool) -> &mut Package {
         self.proc_macro = proc_macro;
@@ -1512,6 +1529,7 @@ impl Package {
         t!(fs::create_dir_all(dst.parent().unwrap()));
         let f = t!(File::create(&dst));
         let mut a = Builder::new(GzEncoder::new(f, Compression::none()));
+        a.sparse(false);
 
         if !self
             .files
@@ -1568,7 +1586,15 @@ impl Package {
         ));
 
         if let Some(version) = &self.rust_version {
-            manifest.push_str(&format!("rust-version = \"{}\"", version));
+            manifest.push_str(&format!("rust-version = \"{}\"\n", version));
+        }
+
+        if let Some(edition) = &self.edition {
+            manifest.push_str(&format!("edition = \"{}\"\n", edition));
+        }
+
+        if let Some(resolver) = &self.resolver {
+            manifest.push_str(&format!("resolver = \"{}\"\n", resolver));
         }
 
         if !self.features.is_empty() {

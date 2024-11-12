@@ -355,7 +355,7 @@ fn rustc_check_err() {
     foo.cargo("rustc --profile check -- --emit=metadata")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] bar v0.1.0 ([ROOT]/bar)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 error[E0425]: [..]
@@ -406,7 +406,6 @@ fn check_all() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn check_all_exclude() {
     let p = project()
@@ -426,7 +425,6 @@ fn check_all_exclude() {
     p.cargo("check --workspace --exclude baz")
         .with_stderr_does_not_contain("[CHECKING] baz v0.1.0 [..]")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -434,7 +432,6 @@ fn check_all_exclude() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn check_all_exclude_glob() {
     let p = project()
@@ -454,7 +451,6 @@ fn check_all_exclude_glob() {
     p.cargo("check --workspace --exclude '*z'")
         .with_stderr_does_not_contain("[CHECKING] baz v0.1.0 [..]")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -481,7 +477,6 @@ fn check_virtual_all_implied() {
     p.cargo("check -v")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] baz v0.1.0 ([ROOT]/foo/baz)
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name baz [..] baz/src/lib.rs [..]`
@@ -494,7 +489,6 @@ fn check_virtual_all_implied() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn check_virtual_manifest_one_project() {
     let p = project()
@@ -514,7 +508,6 @@ fn check_virtual_manifest_one_project() {
     p.cargo("check -p bar")
         .with_stderr_does_not_contain("[CHECKING] baz v0.1.0 [..]")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -522,7 +515,6 @@ fn check_virtual_manifest_one_project() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn check_virtual_manifest_glob() {
     let p = project()
@@ -542,7 +534,6 @@ fn check_virtual_manifest_glob() {
     p.cargo("check -p '*z'")
         .with_stderr_does_not_contain("[CHECKING] bar v0.1.0 [..]")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -564,7 +555,6 @@ fn exclude_warns_on_non_existing_package() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn targets_selected_default() {
     let foo = project()
@@ -638,7 +628,6 @@ error[E0425]: cannot find value `badtext` in this scope
         .run();
 }
 
-#[allow(deprecated)]
 // Verify what is checked with various command-line filters.
 #[cargo_test]
 fn check_filters() {
@@ -1005,7 +994,6 @@ WRAPPER CALLED: rustc --crate-name foo [..]
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn rustc_workspace_wrapper_respects_primary_units() {
     let p = project()
@@ -1029,7 +1017,6 @@ fn rustc_workspace_wrapper_respects_primary_units() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn rustc_workspace_wrapper_excludes_published_deps() {
     let p = project()
@@ -1195,7 +1182,7 @@ fn git_manifest_package_and_project() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/bar`
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] bar v0.0.1 ([ROOTURL]/bar#[..])
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1244,7 +1231,7 @@ fn git_manifest_with_project() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/bar`
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] bar v0.0.1 ([ROOTURL]/bar#[..])
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1597,7 +1584,7 @@ fn check_unused_manifest_keys() {
 [WARNING] unused manifest key: target.cfg(windows).dependencies.foo.wxz
 [WARNING] unused manifest key: target.wasm32-wasip1.dev-dependencies.foo.wxz
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)

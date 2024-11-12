@@ -122,6 +122,9 @@ pub struct Compilation<'gctx> {
     target_runners: HashMap<CompileKind, Option<(PathBuf, Vec<String>)>>,
     /// The linker to use for each host or target.
     target_linkers: HashMap<CompileKind, Option<PathBuf>>,
+
+    /// The total number of warnings emitted by the compilation.
+    pub warning_count: usize,
 }
 
 impl<'gctx> Compilation<'gctx> {
@@ -169,6 +172,7 @@ impl<'gctx> Compilation<'gctx> {
                 .chain(Some(&CompileKind::Host))
                 .map(|kind| Ok((*kind, target_linker(bcx, *kind)?)))
                 .collect::<CargoResult<HashMap<_, _>>>()?,
+            warning_count: 0,
         })
     }
 
@@ -323,7 +327,11 @@ impl<'gctx> Compilation<'gctx> {
 
         let dylib_path = paths::dylib_path();
         let dylib_path_is_empty = dylib_path.is_empty();
-        search_path.extend(dylib_path.into_iter());
+        if dylib_path.starts_with(&search_path) {
+            search_path = dylib_path;
+        } else {
+            search_path.extend(dylib_path.into_iter());
+        }
         if cfg!(target_os = "macos") && dylib_path_is_empty {
             // These are the defaults when DYLD_FALLBACK_LIBRARY_PATH isn't
             // set or set to an empty string. Since Cargo is explicitly setting
@@ -356,6 +364,7 @@ impl<'gctx> Compilation<'gctx> {
         // in BuildContext::target_metadata()
         let rust_version = pkg.rust_version().as_ref().map(ToString::to_string);
         cmd.env("CARGO_MANIFEST_DIR", pkg.root())
+            .env("CARGO_MANIFEST_PATH", pkg.manifest_path())
             .env("CARGO_PKG_VERSION_MAJOR", &pkg.version().major.to_string())
             .env("CARGO_PKG_VERSION_MINOR", &pkg.version().minor.to_string())
             .env("CARGO_PKG_VERSION_PATCH", &pkg.version().patch.to_string())

@@ -668,7 +668,7 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
             .action(ArgAction::SetTrue)
             .global(true)
             .hide(true))
-        .arg(multi_opt("config", "KEY=VALUE", "Override a configuration value").global(true))
+        .arg(multi_opt("config", "KEY=VALUE|PATH", "Override a configuration value").global(true))
         // Better suggestion for the unsupported lowercase unstable feature flag.
         .arg( Arg::new("unsupported-lowercase-unstable-feature-flag")
             .help("")
@@ -682,7 +682,15 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
             .short('Z')
             .value_name("FLAG")
             .action(ArgAction::Append)
-            .global(true))
+            .global(true)
+        .add(clap_complete::ArgValueCandidates::new(|| {
+            let flags = CliUnstable::help();
+            flags.into_iter().map(|flag| {
+                clap_complete::CompletionCandidate::new(flag.0.replace("_", "-")).help(flag.1.map(|help| {
+                    help.into()
+                }))
+            }).collect()
+        })))
         .subcommands(commands::builtin())
 }
 

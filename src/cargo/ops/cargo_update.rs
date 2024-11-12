@@ -7,6 +7,7 @@ use crate::core::{PackageId, PackageIdSpec, PackageIdSpecQuery};
 use crate::core::{Resolve, SourceId, Workspace};
 use crate::ops;
 use crate::sources::source::QueryKind;
+use crate::sources::IndexSummary;
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::GlobalContext;
 use crate::util::toml_mut::dependency::{MaybeWorkspace, Source};
@@ -15,6 +16,8 @@ use crate::util::toml_mut::upgrade::upgrade_requirement;
 use crate::util::{style, OptVersionReq};
 use crate::util::{CargoResult, VersionExt};
 use anyhow::Context as _;
+use cargo_util_schemas::core::PartialVersion;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use semver::{Op, Version, VersionReq};
 use std::cmp::Ordering;
@@ -395,11 +398,16 @@ pub fn write_manifest_upgrades(
 
     let mut any_file_has_changed = false;
 
-    let manifest_paths = std::iter::once(ws.root_manifest())
-        .chain(ws.members().map(|member| member.manifest_path()))
+    let items = std::iter::once((ws.root_manifest(), ws.unstable_features()))
+        .chain(ws.members().map(|member| {
+            (
+                member.manifest_path(),
+                member.manifest().unstable_features(),
+            )
+        }))
         .collect::<Vec<_>>();
 
-    for manifest_path in manifest_paths {
+    for (manifest_path, unstable_features) in items {
         trace!("updating TOML manifest at `{manifest_path:?}` with upgraded dependencies");
 
         let crate_root = manifest_path
@@ -414,7 +422,10 @@ pub fn write_manifest_upgrades(
             for (mut dep_key, dep_item) in dep_table.iter_mut() {
                 let dep_key_str = dep_key.get();
                 let dependency = crate::util::toml_mut::dependency::Dependency::from_toml(
+                    ws.gctx(),
+                    ws.root(),
                     &manifest_path,
+                    unstable_features,
                     dep_key_str,
                     dep_item,
                 )?;
@@ -469,7 +480,14 @@ pub fn write_manifest_upgrades(
                 dep.source = Some(Source::Registry(source));
 
                 trace!("upgrading dependency {name}");
-                dep.update_toml(&crate_root, &mut dep_key, dep_item);
+                dep.update_toml(
+                    ws.gctx(),
+                    ws.root(),
+                    &crate_root,
+                    unstable_features,
+                    &mut dep_key,
+                    dep_item,
+                )?;
                 manifest_has_changed = true;
                 any_file_has_changed = true;
             }
@@ -489,51 +507,54 @@ fn print_lockfile_generation(
     resolve: &Resolve,
     registry: &mut PackageRegistry<'_>,
 ) -> CargoResult<()> {
-    let diff = PackageDiff::new(&resolve);
-    let num_pkgs: usize = diff.iter().map(|d| d.added.len()).sum();
-    if num_pkgs <= 1 {
-        // just ourself, nothing worth reporting
+    let mut changes = PackageChange::new(ws, resolve);
+    let num_pkgs: usize = changes
+        .values()
+        .filter(|change| change.kind.is_new() && !change.is_member.unwrap_or(false))
+        .count();
+    if num_pkgs == 0 {
+        // nothing worth reporting
         return Ok(());
     }
-    status_locking(ws, num_pkgs)?;
+    annotate_required_rust_version(ws, resolve, &mut changes);
 
-    for diff in diff {
-        fn format_latest(version: semver::Version) -> String {
-            let warn = style::WARN;
-            format!(" {warn}(latest: v{version}){warn:#}")
-        }
-        let possibilities = if let Some(query) = diff.alternatives_query() {
-            loop {
-                match registry.query_vec(&query, QueryKind::Exact) {
-                    std::task::Poll::Ready(res) => {
-                        break res?;
+    status_locking(ws, num_pkgs)?;
+    for change in changes.values() {
+        if change.is_member.unwrap_or(false) {
+            continue;
+        };
+        match change.kind {
+            PackageChangeKind::Added => {
+                let possibilities = if let Some(query) = change.alternatives_query() {
+                    loop {
+                        match registry.query_vec(&query, QueryKind::Exact) {
+                            std::task::Poll::Ready(res) => {
+                                break res?;
+                            }
+                            std::task::Poll::Pending => registry.block_until_ready()?,
+                        }
                     }
-                    std::task::Poll::Pending => registry.block_until_ready()?,
+                } else {
+                    vec![]
+                };
+
+                let required_rust_version = report_required_rust_version(resolve, change);
+                let latest = report_latest(&possibilities, change);
+                let note = required_rust_version.or(latest);
+
+                if let Some(note) = note {
+                    ws.gctx().shell().status_with_color(
+                        change.kind.status(),
+                        format!("{change}{note}"),
+                        &change.kind.style(),
+                    )?;
                 }
             }
-        } else {
-            vec![]
-        };
-
-        for package in diff.added.iter() {
-            let latest = if !possibilities.is_empty() {
-                possibilities
-                    .iter()
-                    .map(|s| s.as_summary())
-                    .filter(|s| is_latest(s.version(), package.version()))
-                    .map(|s| s.version().clone())
-                    .max()
-                    .map(format_latest)
-            } else {
-                None
-            };
-
-            if let Some(latest) = latest {
-                ws.gctx().shell().status_with_color(
-                    "Adding",
-                    format!("{package}{latest}"),
-                    &style::NOTE,
-                )?;
+            PackageChangeKind::Upgraded
+            | PackageChangeKind::Downgraded
+            | PackageChangeKind::Removed
+            | PackageChangeKind::Unchanged => {
+                unreachable!("without a previous resolve, everything should be added")
             }
         }
     }
@@ -547,88 +568,50 @@ fn print_lockfile_sync(
     resolve: &Resolve,
     registry: &mut PackageRegistry<'_>,
 ) -> CargoResult<()> {
-    let diff = PackageDiff::diff(&previous_resolve, &resolve);
-    let num_pkgs: usize = diff.iter().map(|d| d.added.len()).sum();
+    let mut changes = PackageChange::diff(ws, previous_resolve, resolve);
+    let num_pkgs: usize = changes
+        .values()
+        .filter(|change| change.kind.is_new() && !change.is_member.unwrap_or(false))
+        .count();
     if num_pkgs == 0 {
+        // nothing worth reporting
         return Ok(());
     }
+    annotate_required_rust_version(ws, resolve, &mut changes);
+
     status_locking(ws, num_pkgs)?;
-
-    for diff in diff {
-        fn format_latest(version: semver::Version) -> String {
-            let warn = style::WARN;
-            format!(" {warn}(latest: v{version}){warn:#}")
-        }
-        let possibilities = if let Some(query) = diff.alternatives_query() {
-            loop {
-                match registry.query_vec(&query, QueryKind::Exact) {
-                    std::task::Poll::Ready(res) => {
-                        break res?;
-                    }
-                    std::task::Poll::Pending => registry.block_until_ready()?,
-                }
-            }
-        } else {
-            vec![]
+    for change in changes.values() {
+        if change.is_member.unwrap_or(false) {
+            continue;
         };
-
-        if let Some((removed, added)) = diff.change() {
-            let latest = if !possibilities.is_empty() {
-                possibilities
-                    .iter()
-                    .map(|s| s.as_summary())
-                    .filter(|s| is_latest(s.version(), added.version()))
-                    .map(|s| s.version().clone())
-                    .max()
-                    .map(format_latest)
-            } else {
-                None
-            }
-            .unwrap_or_default();
-
-            let msg = if removed.source_id().is_git() {
-                format!(
-                    "{removed} -> #{}",
-                    &added.source_id().precise_git_fragment().unwrap()[..8],
-                )
-            } else {
-                format!("{removed} -> v{}{latest}", added.version())
-            };
-
-            // If versions differ only in build metadata, we call it an "update"
-            // regardless of whether the build metadata has gone up or down.
-            // This metadata is often stuff like git commit hashes, which are
-            // not meaningfully ordered.
-            if removed.version().cmp_precedence(added.version()) == Ordering::Greater {
-                ws.gctx()
-                    .shell()
-                    .status_with_color("Downgrading", msg, &style::WARN)?;
-            } else {
-                ws.gctx()
-                    .shell()
-                    .status_with_color("Updating", msg, &style::GOOD)?;
-            }
-        } else {
-            for package in diff.added.iter() {
-                let latest = if !possibilities.is_empty() {
-                    possibilities
-                        .iter()
-                        .map(|s| s.as_summary())
-                        .filter(|s| is_latest(s.version(), package.version()))
-                        .map(|s| s.version().clone())
-                        .max()
-                        .map(format_latest)
+        match change.kind {
+            PackageChangeKind::Added
+            | PackageChangeKind::Upgraded
+            | PackageChangeKind::Downgraded => {
+                let possibilities = if let Some(query) = change.alternatives_query() {
+                    loop {
+                        match registry.query_vec(&query, QueryKind::Exact) {
+                            std::task::Poll::Ready(res) => {
+                                break res?;
+                            }
+                            std::task::Poll::Pending => registry.block_until_ready()?,
+                        }
+                    }
                 } else {
-                    None
-                }
-                .unwrap_or_default();
+                    vec![]
+                };
+
+                let required_rust_version = report_required_rust_version(resolve, change);
+                let latest = report_latest(&possibilities, change);
+                let note = required_rust_version.or(latest).unwrap_or_default();
 
                 ws.gctx().shell().status_with_color(
-                    "Adding",
-                    format!("{package}{latest}"),
-                    &style::NOTE,
+                    change.kind.status(),
+                    format!("{change}{note}"),
+                    &change.kind.style(),
                 )?;
             }
+            PackageChangeKind::Removed | PackageChangeKind::Unchanged => {}
         }
     }
 
@@ -642,19 +625,19 @@ fn print_lockfile_updates(
     precise: bool,
     registry: &mut PackageRegistry<'_>,
 ) -> CargoResult<()> {
-    let diff = PackageDiff::diff(&previous_resolve, &resolve);
-    let num_pkgs: usize = diff.iter().map(|d| d.added.len()).sum();
+    let mut changes = PackageChange::diff(ws, previous_resolve, resolve);
+    let num_pkgs: usize = changes
+        .values()
+        .filter(|change| change.kind.is_new())
+        .count();
+    annotate_required_rust_version(ws, resolve, &mut changes);
+
     if !precise {
         status_locking(ws, num_pkgs)?;
     }
-
     let mut unchanged_behind = 0;
-    for diff in diff {
-        fn format_latest(version: semver::Version) -> String {
-            let warn = style::WARN;
-            format!(" {warn}(latest: v{version}){warn:#}")
-        }
-        let possibilities = if let Some(query) = diff.alternatives_query() {
+    for change in changes.values() {
+        let possibilities = if let Some(query) = change.alternatives_query() {
             loop {
                 match registry.query_vec(&query, QueryKind::Exact) {
                     std::task::Poll::Ready(res) => {
@@ -667,92 +650,43 @@ fn print_lockfile_updates(
             vec![]
         };
 
-        if let Some((removed, added)) = diff.change() {
-            let latest = if !possibilities.is_empty() {
-                possibilities
-                    .iter()
-                    .map(|s| s.as_summary())
-                    .filter(|s| is_latest(s.version(), added.version()))
-                    .map(|s| s.version().clone())
-                    .max()
-                    .map(format_latest)
-            } else {
-                None
-            }
-            .unwrap_or_default();
-
-            let msg = if removed.source_id().is_git() {
-                format!(
-                    "{removed} -> #{}",
-                    &added.source_id().precise_git_fragment().unwrap()[..8],
-                )
-            } else {
-                format!("{removed} -> v{}{latest}", added.version())
-            };
-
-            // If versions differ only in build metadata, we call it an "update"
-            // regardless of whether the build metadata has gone up or down.
-            // This metadata is often stuff like git commit hashes, which are
-            // not meaningfully ordered.
-            if removed.version().cmp_precedence(added.version()) == Ordering::Greater {
-                ws.gctx()
-                    .shell()
-                    .status_with_color("Downgrading", msg, &style::WARN)?;
-            } else {
-                ws.gctx()
-                    .shell()
-                    .status_with_color("Updating", msg, &style::GOOD)?;
-            }
-        } else {
-            for package in diff.removed.iter() {
-                ws.gctx().shell().status_with_color(
-                    "Removing",
-                    format!("{package}"),
-                    &style::ERROR,
-                )?;
-            }
-            for package in diff.added.iter() {
-                let latest = if !possibilities.is_empty() {
-                    possibilities
-                        .iter()
-                        .map(|s| s.as_summary())
-                        .filter(|s| is_latest(s.version(), package.version()))
-                        .map(|s| s.version().clone())
-                        .max()
-                        .map(format_latest)
-                } else {
-                    None
-                }
-                .unwrap_or_default();
+        match change.kind {
+            PackageChangeKind::Added
+            | PackageChangeKind::Upgraded
+            | PackageChangeKind::Downgraded => {
+                let required_rust_version = report_required_rust_version(resolve, change);
+                let latest = report_latest(&possibilities, change);
+                let note = required_rust_version.or(latest).unwrap_or_default();
 
                 ws.gctx().shell().status_with_color(
-                    "Adding",
-                    format!("{package}{latest}"),
-                    &style::NOTE,
+                    change.kind.status(),
+                    format!("{change}{note}"),
+                    &change.kind.style(),
                 )?;
             }
-        }
-        for package in &diff.unchanged {
-            let latest = if !possibilities.is_empty() {
-                possibilities
-                    .iter()
-                    .map(|s| s.as_summary())
-                    .filter(|s| is_latest(s.version(), package.version()))
-                    .map(|s| s.version().clone())
-                    .max()
-                    .map(format_latest)
-            } else {
-                None
-            };
+            PackageChangeKind::Removed => {
+                ws.gctx().shell().status_with_color(
+                    change.kind.status(),
+                    format!("{change}"),
+                    &change.kind.style(),
+                )?;
+            }
+            PackageChangeKind::Unchanged => {
+                let required_rust_version = report_required_rust_version(resolve, change);
+                let latest = report_latest(&possibilities, change);
+                let note = required_rust_version.as_deref().or(latest.as_deref());
 
-            if let Some(latest) = latest {
-                unchanged_behind += 1;
-                if ws.gctx().shell().verbosity() == Verbosity::Verbose {
-                    ws.gctx().shell().status_with_color(
-                        "Unchanged",
-                        format!("{package}{latest}"),
-                        &anstyle::Style::new().bold(),
-                    )?;
+                if let Some(note) = note {
+                    if latest.is_some() {
+                        unchanged_behind += 1;
+                    }
+                    if ws.gctx().shell().verbosity() == Verbosity::Verbose {
+                        ws.gctx().shell().status_with_color(
+                            change.kind.status(),
+                            format!("{change}{note}"),
+                            &change.kind.style(),
+                        )?;
+                    }
                 }
             }
         }
@@ -788,14 +722,7 @@ fn status_locking(ws: &Workspace<'_>, num_pkgs: usize) -> CargoResult<()> {
             write!(&mut cfg, " latest")?;
         }
 
-        if ws.resolve_honors_rust_version() {
-            let rust_version = if let Some(ver) = ws.rust_version() {
-                ver.clone().into_partial()
-            } else {
-                let rustc = ws.gctx().load_global_rustc(Some(ws))?;
-                let rustc_version = rustc.version.clone().into();
-                rustc_version
-            };
+        if let Some(rust_version) = required_rust_version(ws) {
             write!(&mut cfg, " Rust {rust_version}")?;
         }
         write!(&mut cfg, " compatible version{plural}")?;
@@ -805,6 +732,127 @@ fn status_locking(ws: &Workspace<'_>, num_pkgs: usize) -> CargoResult<()> {
         .shell()
         .status("Locking", format!("{num_pkgs} package{plural}{cfg}"))?;
     Ok(())
+}
+
+fn required_rust_version(ws: &Workspace<'_>) -> Option<PartialVersion> {
+    if !ws.resolve_honors_rust_version() {
+        return None;
+    }
+
+    if let Some(ver) = ws.lowest_rust_version() {
+        Some(ver.clone().into_partial())
+    } else {
+        let rustc = ws.gctx().load_global_rustc(Some(ws)).ok()?;
+        let rustc_version = rustc.version.clone().into();
+        Some(rustc_version)
+    }
+}
+
+fn report_required_rust_version(resolve: &Resolve, change: &PackageChange) -> Option<String> {
+    if change.package_id.source_id().is_path() {
+        return None;
+    }
+    let summary = resolve.summary(change.package_id);
+    let package_rust_version = summary.rust_version()?;
+    let required_rust_version = change.required_rust_version.as_ref()?;
+    if package_rust_version.is_compatible_with(required_rust_version) {
+        return None;
+    }
+
+    let error = style::ERROR;
+    Some(format!(
+        " {error}(requires Rust {package_rust_version}){error:#}"
+    ))
+}
+
+fn report_latest(possibilities: &[IndexSummary], change: &PackageChange) -> Option<String> {
+    let package_id = change.package_id;
+    if !package_id.source_id().is_registry() {
+        return None;
+    }
+
+    let version_req = package_id.version().to_caret_req();
+    let required_rust_version = change.required_rust_version.as_ref();
+
+    let compat_ver_compat_msrv_summary = possibilities
+        .iter()
+        .map(|s| s.as_summary())
+        .filter(|s| {
+            if let (Some(summary_rust_version), Some(required_rust_version)) =
+                (s.rust_version(), required_rust_version)
+            {
+                summary_rust_version.is_compatible_with(required_rust_version)
+            } else {
+                true
+            }
+        })
+        .filter(|s| package_id.version() != s.version() && version_req.matches(s.version()))
+        .max_by_key(|s| s.version());
+    if let Some(summary) = compat_ver_compat_msrv_summary {
+        let warn = style::WARN;
+        let version = summary.version();
+        let report = format!(" {warn}(available: v{version}){warn:#}");
+        return Some(report);
+    }
+
+    if !change.is_transitive.unwrap_or(true) {
+        let incompat_ver_compat_msrv_summary = possibilities
+            .iter()
+            .map(|s| s.as_summary())
+            .filter(|s| {
+                if let (Some(summary_rust_version), Some(required_rust_version)) =
+                    (s.rust_version(), required_rust_version)
+                {
+                    summary_rust_version.is_compatible_with(required_rust_version)
+                } else {
+                    true
+                }
+            })
+            .filter(|s| is_latest(s.version(), package_id.version()))
+            .max_by_key(|s| s.version());
+        if let Some(summary) = incompat_ver_compat_msrv_summary {
+            let warn = style::WARN;
+            let version = summary.version();
+            let report = format!(" {warn}(available: v{version}){warn:#}");
+            return Some(report);
+        }
+    }
+
+    let compat_ver_summary = possibilities
+        .iter()
+        .map(|s| s.as_summary())
+        .filter(|s| package_id.version() != s.version() && version_req.matches(s.version()))
+        .max_by_key(|s| s.version());
+    if let Some(summary) = compat_ver_summary {
+        let msrv_note = summary
+            .rust_version()
+            .map(|rv| format!(", requires Rust {rv}"))
+            .unwrap_or_default();
+        let warn = style::NOP;
+        let version = summary.version();
+        let report = format!(" {warn}(available: v{version}{msrv_note}){warn:#}");
+        return Some(report);
+    }
+
+    if !change.is_transitive.unwrap_or(true) {
+        let incompat_ver_summary = possibilities
+            .iter()
+            .map(|s| s.as_summary())
+            .filter(|s| is_latest(s.version(), package_id.version()))
+            .max_by_key(|s| s.version());
+        if let Some(summary) = incompat_ver_summary {
+            let msrv_note = summary
+                .rust_version()
+                .map(|rv| format!(", requires Rust {rv}"))
+                .unwrap_or_default();
+            let warn = style::NOP;
+            let version = summary.version();
+            let report = format!(" {warn}(available: v{version}{msrv_note}){warn:#}");
+            return Some(report);
+        }
+    }
+
+    None
 }
 
 fn is_latest(candidate: &semver::Version, current: &semver::Version) -> bool {
@@ -831,6 +879,198 @@ fn fill_with_deps<'a>(
     }
 }
 
+#[derive(Clone, Debug)]
+struct PackageChange {
+    package_id: PackageId,
+    previous_id: Option<PackageId>,
+    kind: PackageChangeKind,
+    is_member: Option<bool>,
+    is_transitive: Option<bool>,
+    required_rust_version: Option<PartialVersion>,
+}
+
+impl PackageChange {
+    pub fn new(ws: &Workspace<'_>, resolve: &Resolve) -> IndexMap<PackageId, Self> {
+        let diff = PackageDiff::new(resolve);
+        Self::with_diff(diff, ws, resolve)
+    }
+
+    pub fn diff(
+        ws: &Workspace<'_>,
+        previous_resolve: &Resolve,
+        resolve: &Resolve,
+    ) -> IndexMap<PackageId, Self> {
+        let diff = PackageDiff::diff(previous_resolve, resolve);
+        Self::with_diff(diff, ws, resolve)
+    }
+
+    fn with_diff(
+        diff: impl Iterator<Item = PackageDiff>,
+        ws: &Workspace<'_>,
+        resolve: &Resolve,
+    ) -> IndexMap<PackageId, Self> {
+        let member_ids: HashSet<_> = ws.members().map(|p| p.package_id()).collect();
+
+        let mut changes = IndexMap::new();
+        for diff in diff {
+            if let Some((previous_id, package_id)) = diff.change() {
+                // If versions differ only in build metadata, we call it an "update"
+                // regardless of whether the build metadata has gone up or down.
+                // This metadata is often stuff like git commit hashes, which are
+                // not meaningfully ordered.
+                let kind = if previous_id.version().cmp_precedence(package_id.version())
+                    == Ordering::Greater
+                {
+                    PackageChangeKind::Downgraded
+                } else {
+                    PackageChangeKind::Upgraded
+                };
+                let is_member = Some(member_ids.contains(&package_id));
+                let is_transitive = Some(true);
+                let change = Self {
+                    package_id,
+                    previous_id: Some(previous_id),
+                    kind,
+                    is_member,
+                    is_transitive,
+                    required_rust_version: None,
+                };
+                changes.insert(change.package_id, change);
+            } else {
+                for package_id in diff.removed {
+                    let kind = PackageChangeKind::Removed;
+                    let is_member = None;
+                    let is_transitive = None;
+                    let change = Self {
+                        package_id,
+                        previous_id: None,
+                        kind,
+                        is_member,
+                        is_transitive,
+                        required_rust_version: None,
+                    };
+                    changes.insert(change.package_id, change);
+                }
+                for package_id in diff.added {
+                    let kind = PackageChangeKind::Added;
+                    let is_member = Some(member_ids.contains(&package_id));
+                    let is_transitive = Some(true);
+                    let change = Self {
+                        package_id,
+                        previous_id: None,
+                        kind,
+                        is_member,
+                        is_transitive,
+                        required_rust_version: None,
+                    };
+                    changes.insert(change.package_id, change);
+                }
+            }
+            for package_id in diff.unchanged {
+                let kind = PackageChangeKind::Unchanged;
+                let is_member = Some(member_ids.contains(&package_id));
+                let is_transitive = Some(true);
+                let change = Self {
+                    package_id,
+                    previous_id: None,
+                    kind,
+                    is_member,
+                    is_transitive,
+                    required_rust_version: None,
+                };
+                changes.insert(change.package_id, change);
+            }
+        }
+
+        for member_id in &member_ids {
+            let Some(change) = changes.get_mut(member_id) else {
+                continue;
+            };
+            change.is_transitive = Some(false);
+            for (direct_dep_id, _) in resolve.deps(*member_id) {
+                let Some(change) = changes.get_mut(&direct_dep_id) else {
+                    continue;
+                };
+                change.is_transitive = Some(false);
+            }
+        }
+
+        changes
+    }
+
+    /// For querying [`PackageRegistry`] for alternative versions to report to the user
+    fn alternatives_query(&self) -> Option<crate::core::dependency::Dependency> {
+        if !self.package_id.source_id().is_registry() {
+            return None;
+        }
+
+        let query = crate::core::dependency::Dependency::parse(
+            self.package_id.name(),
+            None,
+            self.package_id.source_id(),
+        )
+        .expect("already a valid dependency");
+        Some(query)
+    }
+}
+
+impl std::fmt::Display for PackageChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let package_id = self.package_id;
+        if let Some(previous_id) = self.previous_id {
+            if package_id.source_id().is_git() {
+                write!(
+                    f,
+                    "{previous_id} -> #{}",
+                    &package_id.source_id().precise_git_fragment().unwrap()[..8],
+                )
+            } else {
+                write!(f, "{previous_id} -> v{}", package_id.version())
+            }
+        } else {
+            write!(f, "{package_id}")
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PackageChangeKind {
+    Added,
+    Removed,
+    Upgraded,
+    Downgraded,
+    Unchanged,
+}
+
+impl PackageChangeKind {
+    pub fn is_new(&self) -> bool {
+        match self {
+            Self::Added | Self::Upgraded | Self::Downgraded => true,
+            Self::Removed | Self::Unchanged => false,
+        }
+    }
+
+    pub fn status(&self) -> &'static str {
+        match self {
+            Self::Added => "Adding",
+            Self::Removed => "Removing",
+            Self::Upgraded => "Updating",
+            Self::Downgraded => "Downgrading",
+            Self::Unchanged => "Unchanged",
+        }
+    }
+
+    pub fn style(&self) -> anstyle::Style {
+        match self {
+            Self::Added => style::NOTE,
+            Self::Removed => style::ERROR,
+            Self::Upgraded => style::GOOD,
+            Self::Downgraded => style::WARN,
+            Self::Unchanged => anstyle::Style::new().bold(),
+        }
+    }
+}
+
 /// All resolved versions of a package name within a [`SourceId`]
 #[derive(Default, Clone, Debug)]
 pub struct PackageDiff {
@@ -840,7 +1080,7 @@ pub struct PackageDiff {
 }
 
 impl PackageDiff {
-    pub fn new(resolve: &Resolve) -> Vec<Self> {
+    pub fn new(resolve: &Resolve) -> impl Iterator<Item = Self> {
         let mut changes = BTreeMap::new();
         let empty = Self::default();
         for dep in resolve.iter() {
@@ -851,10 +1091,10 @@ impl PackageDiff {
                 .push(dep);
         }
 
-        changes.into_iter().map(|(_, v)| v).collect()
+        changes.into_iter().map(|(_, v)| v)
     }
 
-    pub fn diff(previous_resolve: &Resolve, resolve: &Resolve) -> Vec<Self> {
+    pub fn diff(previous_resolve: &Resolve, resolve: &Resolve) -> impl Iterator<Item = Self> {
         fn vec_subset(a: &[PackageId], b: &[PackageId]) -> Vec<PackageId> {
             a.iter().filter(|a| !contains_id(b, a)).cloned().collect()
         }
@@ -925,7 +1165,7 @@ impl PackageDiff {
         }
         debug!("{:#?}", changes);
 
-        changes.into_iter().map(|(_, v)| v).collect()
+        changes.into_iter().map(|(_, v)| v)
     }
 
     fn key(dep: PackageId) -> (&'static str, SourceId) {
@@ -937,32 +1177,58 @@ impl PackageDiff {
     /// All `PackageDiff` knows is that entries were added/removed within [`Resolve`].
     /// A package could be added or removed because of dependencies from other packages
     /// which makes it hard to definitively say "X was upgrade to N".
-    pub fn change(&self) -> Option<(&PackageId, &PackageId)> {
+    pub fn change(&self) -> Option<(PackageId, PackageId)> {
         if self.removed.len() == 1 && self.added.len() == 1 {
-            Some((&self.removed[0], &self.added[0]))
+            Some((self.removed[0], self.added[0]))
         } else {
             None
         }
     }
+}
 
-    /// For querying [`PackageRegistry`] for alternative versions to report to the user
-    pub fn alternatives_query(&self) -> Option<crate::core::dependency::Dependency> {
-        let package_id = [
-            self.added.iter(),
-            self.unchanged.iter(),
-            self.removed.iter(),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
-        // Limit to registry as that is the only source with meaningful alternative versions
-        .filter(|s| s.source_id().is_registry())?;
-        let query = crate::core::dependency::Dependency::parse(
-            package_id.name(),
-            None,
-            package_id.source_id(),
-        )
-        .expect("already a valid dependency");
-        Some(query)
+fn annotate_required_rust_version(
+    ws: &Workspace<'_>,
+    resolve: &Resolve,
+    changes: &mut IndexMap<PackageId, PackageChange>,
+) {
+    let rustc = ws.gctx().load_global_rustc(Some(ws)).ok();
+    let rustc_version: Option<PartialVersion> =
+        rustc.as_ref().map(|rustc| rustc.version.clone().into());
+
+    if ws.resolve_honors_rust_version() {
+        let mut queue: std::collections::VecDeque<_> = ws
+            .members()
+            .map(|p| {
+                (
+                    p.rust_version()
+                        .map(|r| r.clone().into_partial())
+                        .or_else(|| rustc_version.clone()),
+                    p.package_id(),
+                )
+            })
+            .collect();
+        while let Some((required_rust_version, current_id)) = queue.pop_front() {
+            let Some(required_rust_version) = required_rust_version else {
+                continue;
+            };
+            if let Some(change) = changes.get_mut(&current_id) {
+                if let Some(existing) = change.required_rust_version.as_ref() {
+                    if *existing <= required_rust_version {
+                        // Stop early; we already walked down this path with a better match
+                        continue;
+                    }
+                }
+                change.required_rust_version = Some(required_rust_version.clone());
+            }
+            queue.extend(
+                resolve
+                    .deps(current_id)
+                    .map(|(dep, _)| (Some(required_rust_version.clone()), dep)),
+            );
+        }
+    } else {
+        for change in changes.values_mut() {
+            change.required_rust_version = rustc_version.clone();
+        }
     }
 }

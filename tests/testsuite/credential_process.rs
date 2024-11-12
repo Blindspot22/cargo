@@ -76,8 +76,8 @@ fn publish() {
 {"v":1,"registry":{"index-url":"[..]","name":"alternative","headers":[..]},"kind":"get","operation":"read"}
 [PACKAGING] foo v0.1.0 ([ROOT]/foo)
 [PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
-{"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.0","cksum":"[..]"}
 [UPLOADING] foo v0.1.0 ([ROOT]/foo)
+{"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.0","cksum":"[..]"}
 [UPLOADED] foo v0.1.0 to registry `alternative`
 [NOTE] waiting for `foo v0.1.0` to be available at registry `alternative`.
 You may press ctrl-c [..]
@@ -529,8 +529,8 @@ fn token_caching() {
 {"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"read"}
 [PACKAGING] foo v0.1.0 ([ROOT]/foo)
 [PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
-{"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.0","cksum":"[..]"}
 [UPLOADING] foo v0.1.0 ([ROOT]/foo)
+{"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.0","cksum":"[..]"}
 [UPLOADED] foo v0.1.0 to registry `alternative`
 [NOTE] waiting [..]
 You may press ctrl-c [..]
@@ -543,6 +543,31 @@ You may press ctrl-c [..]
     p.cargo("publish --registry alternative --no-verify")
         .with_stderr_data(output)
         .run();
+
+    let output_non_independent = r#"[UPDATING] `alternative` index
+{"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"read"}
+[PACKAGING] foo v0.1.1 ([ROOT]/foo)
+[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[UPLOADING] foo v0.1.1 ([ROOT]/foo)
+{"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.1","cksum":"[..]"}
+[UPLOADED] foo v0.1.1 to registry `alternative`
+[NOTE] waiting [..]
+You may press ctrl-c [..]
+[PUBLISHED] foo v0.1.1 at registry `alternative`
+"#;
+
+    p.change_file(
+        "Cargo.toml",
+        r#"
+        [package]
+        name = "foo"
+        version = "0.1.1"
+        edition = "2015"
+        description = "foo"
+        license = "MIT"
+        homepage = "https://example.com/"
+    "#,
+    );
 
     p.change_file(
         ".cargo/config.toml",
@@ -557,7 +582,7 @@ You may press ctrl-c [..]
     );
 
     p.cargo("publish --registry alternative --no-verify")
-        .with_stderr_data(output)
+        .with_stderr_data(output_non_independent)
         .run();
 }
 
@@ -610,7 +635,7 @@ fn basic_provider() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 CARGO=Some([..])
 CARGO_REGISTRY_NAME_OPT=Some("alternative")
 CARGO_REGISTRY_INDEX_URL=Some("[ROOTURL]/alternative-registry")

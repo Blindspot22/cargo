@@ -14,11 +14,13 @@ DESCRIPTION
        following steps:
 
        1. Load and check the current workspace, performing some basic checks.
+
           o  Path dependencies are not allowed unless they have a version key.
              Cargo will ignore the path key for dependencies in published
              packages. dev-dependencies do not have this restriction.
 
        2. Create the compressed .crate file.
+
           o  The original Cargo.toml file is rewritten and normalized.
 
           o  [patch], [replace], and [workspace] sections are removed from the
@@ -32,7 +34,14 @@ DESCRIPTION
              about the current VCS checkout hash if available, as well as a
              flag if the worktree is dirty.
 
+          o  Symlinks are flattened to their target files.
+
+          o  Files and directories are included or excluded based on rules
+             mentioned in the [include] and [exclude] fields
+             <https://doc.rust-lang.org/cargo/reference/manifest.html#the-exclude-and-include-fields>.
+
        3. Extract the .crate file and build it to verify it can build.
+
           o  This will rebuild your package from scratch to ensure that it can
              be built from a pristine state. The --no-verify flag can be used
              to skip this step.
@@ -144,7 +153,7 @@ OPTIONS
            Note that specifying this flag makes Cargo run in a different mode
            where the target artifacts are placed in a separate directory. See
            the build cache
-           <https://doc.rust-lang.org/cargo/guide/build-cache.html>
+           <https://doc.rust-lang.org/cargo/reference/build-cache.html>
            documentation for more details.
 
        --target-dir directory
@@ -211,6 +220,21 @@ OPTIONS
 
        --frozen
            Equivalent to specifying both --locked and --offline.
+
+       --lockfile-path PATH
+           Changes the path of the lockfile from the default
+           (<workspace_root>/Cargo.lock) to PATH. PATH must end with Cargo.lock
+           (e.g. --lockfile-path /tmp/temporary-lockfile/Cargo.lock). Note that
+           providing --lockfile-path will ignore existing lockfile at the
+           default path, and instead will either use the lockfile from PATH, or
+           write a new lockfile into the provided PATH if it doesn’t exist.
+           This flag can be used to run most commands in read-only directories,
+           writing lockfile into the provided PATH.
+
+           This option is only available on the nightly channel
+           <https://doc.rust-lang.org/book/appendix-07-nightly-rust.html> and
+           requires the -Z unstable-options flag to enable (see #14421
+           <https://github.com/rust-lang/cargo/issues/14421>).
 
    Miscellaneous Options
        -j N, --jobs N

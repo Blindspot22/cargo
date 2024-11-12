@@ -1624,8 +1624,8 @@ fn ambiguous_name() {
     p.cargo("tree -p dep")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 4 packages to latest compatible versions
-[ADDING] dep v1.0.0 (latest: v2.0.0)
+[LOCKING] 3 packages to latest compatible versions
+[ADDING] dep v1.0.0 (available: v2.0.0)
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v2.0.0 (registry `dummy-registry`)
 [DOWNLOADED] dep v1.0.0 (registry `dummy-registry`)

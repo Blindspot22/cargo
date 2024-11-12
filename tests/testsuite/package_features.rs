@@ -62,7 +62,7 @@ fn virtual_no_default_features() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [CHECKING] b v0.1.0 ([ROOT]/foo/b)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -75,7 +75,9 @@ fn virtual_no_default_features() {
     p.cargo("check --features foo")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] none of the selected packages contains these features: foo, did you mean: f1?
+[ERROR] none of the selected packages contains this feature: foo
+selected packages: a, b
+[HELP] there is a similarly named feature: f1
 
 "#]])
         .run();
@@ -83,7 +85,9 @@ fn virtual_no_default_features() {
     p.cargo("check --features a/dep1,b/f1,b/f2,f2")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] none of the selected packages contains these features: b/f2, f2, did you mean: f1?
+[ERROR] none of the selected packages contains these features: b/f2, f2
+selected packages: a, b
+[HELP] there is a similarly named feature: f1
 
 "#]])
         .run();
@@ -91,7 +95,9 @@ fn virtual_no_default_features() {
     p.cargo("check --features a/dep,b/f1,b/f2,f2")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] none of the selected packages contains these features: a/dep, b/f2, f2, did you mean: a/dep1, f1?
+[ERROR] none of the selected packages contains these features: a/dep, b/f2, f2
+selected packages: a, b
+[HELP] there are similarly named features: a/dep1, f1
 
 "#]])
         .run();
@@ -99,7 +105,18 @@ fn virtual_no_default_features() {
     p.cargo("check --features a/dep,a/dep1")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] none of the selected packages contains these features: a/dep, did you mean: b/f1?
+[ERROR] none of the selected packages contains this feature: a/dep
+selected packages: a, b
+[HELP] there is a similarly named feature: b/f1
+
+"#]])
+        .run();
+
+    p.cargo("check -p b --features=dep1")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] the package 'b' does not contain this feature: dep1
+[HELP] package with the missing feature: a
 
 "#]])
         .run();
@@ -126,7 +143,8 @@ fn virtual_typo_member_feature() {
         .cargo("check --features a/deny-warning")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] none of the selected packages contains these features: a/deny-warning, did you mean: a/deny-warnings?
+[ERROR] the package 'a' does not contain this feature: a/deny-warning
+[HELP] there is a similarly named feature: a/deny-warnings
 
 "#]])
         .run();
@@ -169,7 +187,6 @@ fn virtual_features() {
     p.cargo("check --features f1")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [CHECKING] b v0.1.0 ([ROOT]/foo/b)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -240,7 +257,6 @@ fn virtual_with_specific() {
     p.cargo("check -p a -p b --features f1,f2,f3")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [CHECKING] b v0.1.0 ([ROOT]/foo/b)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -410,7 +426,6 @@ feature set
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn virtual_member_slash() {
     // member slash feature syntax
@@ -579,7 +594,7 @@ fn non_member() {
     p.cargo("check -p dep")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v1.0.0 (registry `dummy-registry`)
 [CHECKING] dep v1.0.0

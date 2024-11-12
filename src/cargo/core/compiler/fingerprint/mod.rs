@@ -33,6 +33,12 @@
 //!      details. If any input files are missing, or are newer than the
 //!      dep-info, then the unit is dirty.
 //!
+//!  - Alternatively if you're using the unstable feature `checksum-freshness`
+//!    mtimes are ignored entirely in favor of comparing first the file size, and
+//!    then the checksum with a known prior value emitted by rustc. Only nightly
+//!    rustc will emit the needed metadata at the time of writing. This is dependent
+//!    on the unstable feature `-Z checksum-hash-algorithm`.
+//!
 //! Note: Fingerprinting is not a perfect solution. Filesystem mtime tracking
 //! is notoriously imprecise and problematic. Only a small part of the
 //! environment is captured. This is a balance of performance, simplicity, and
@@ -353,20 +359,22 @@
 //! [`CompileMode::RunCustomBuild`]: crate::core::compiler::CompileMode::RunCustomBuild
 //! [`A-rebuild-detection`]: https://github.com/rust-lang/cargo/issues?q=is%3Aissue+is%3Aopen+label%3AA-rebuild-detection
 
+mod dep_info;
 mod dirty_reason;
 
 use std::collections::hash_map::{Entry, HashMap};
-
 use std::env;
+use std::fs;
+use std::fs::File;
 use std::hash::{self, Hash, Hasher};
-use std::io;
+use std::io::{self};
 use std::path::{Path, PathBuf};
-use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use anyhow::{bail, format_err, Context as _};
-use cargo_util::{paths, ProcessBuilder};
+use anyhow::format_err;
+use anyhow::Context as _;
+use cargo_util::paths;
 use filetime::FileTime;
 use serde::de;
 use serde::ser;
@@ -375,16 +383,20 @@ use tracing::{debug, info};
 
 use crate::core::compiler::unit_graph::UnitDep;
 use crate::core::Package;
+use crate::util;
 use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
-use crate::util::{self, try_canonicalize};
 use crate::util::{internal, path_args, StableHasher};
 use crate::{GlobalContext, CARGO_ENV};
 
 use super::custom_build::BuildDeps;
 use super::{BuildContext, BuildRunner, FileFlavor, Job, Unit, Work};
 
-pub use dirty_reason::DirtyReason;
+pub use self::dep_info::parse_dep_info;
+pub use self::dep_info::parse_rustc_dep_info;
+pub use self::dep_info::translate_dep_info;
+pub use self::dep_info::Checksum;
+pub use self::dirty_reason::DirtyReason;
 
 /// Determines if a [`Unit`] is up-to-date, and if not prepares necessary work to
 /// update the persisted fingerprint.
@@ -725,7 +737,10 @@ enum LocalFingerprint {
     /// The `dep_info` file, when present, also lists a number of other files
     /// for us to look at. If any of those files are newer than this file then
     /// we need to recompile.
-    CheckDepInfo { dep_info: PathBuf },
+    ///
+    /// If the `checksum` bool is true then the dep_info file is expected to
+    /// contain file checksums instead of file mtimes.
+    CheckDepInfo { dep_info: PathBuf, checksum: bool },
 
     /// This represents a nonempty set of `rerun-if-changed` annotations printed
     /// out by a build script. The `output` file is a relative file anchored at
@@ -752,12 +767,25 @@ enum LocalFingerprint {
 #[derive(Clone, Debug)]
 pub enum StaleItem {
     MissingFile(PathBuf),
+    UnableToReadFile(PathBuf),
+    FailedToReadMetadata(PathBuf),
+    FileSizeChanged {
+        path: PathBuf,
+        old_size: u64,
+        new_size: u64,
+    },
     ChangedFile {
         reference: PathBuf,
         reference_mtime: FileTime,
         stale: PathBuf,
         stale_mtime: FileTime,
     },
+    ChangedChecksum {
+        source: PathBuf,
+        stored_checksum: Checksum,
+        new_checksum: Checksum,
+    },
+    MissingChecksum(PathBuf),
     ChangedEnv {
         var: String,
         previous: Option<String>,
@@ -793,6 +821,7 @@ impl LocalFingerprint {
     fn find_stale_item(
         &self,
         mtime_cache: &mut HashMap<PathBuf, FileTime>,
+        checksum_cache: &mut HashMap<PathBuf, Checksum>,
         pkg_root: &Path,
         target_root: &Path,
         cargo_exe: &Path,
@@ -805,45 +834,62 @@ impl LocalFingerprint {
             // matches, and for each file we see if any of them are newer than
             // the `dep_info` file itself whose mtime represents the start of
             // rustc.
-            LocalFingerprint::CheckDepInfo { dep_info } => {
+            LocalFingerprint::CheckDepInfo { dep_info, checksum } => {
                 let dep_info = target_root.join(dep_info);
                 let Some(info) = parse_dep_info(pkg_root, target_root, &dep_info)? else {
                     return Ok(Some(StaleItem::MissingFile(dep_info)));
                 };
                 for (key, previous) in info.env.iter() {
                     let current = if key == CARGO_ENV {
-                        Some(
-                            cargo_exe
-                                .to_str()
-                                .ok_or_else(|| {
-                                    format_err!(
-                                        "cargo exe path {} must be valid UTF-8",
-                                        cargo_exe.display()
-                                    )
-                                })?
-                                .to_string(),
-                        )
+                        Some(cargo_exe.to_str().ok_or_else(|| {
+                            format_err!(
+                                "cargo exe path {} must be valid UTF-8",
+                                cargo_exe.display()
+                            )
+                        })?)
                     } else {
-                        gctx.get_env(key).ok()
+                        if let Some(value) = gctx.env_config()?.get(key) {
+                            value.to_str()
+                        } else {
+                            gctx.get_env(key).ok()
+                        }
                     };
-                    if current == *previous {
+                    if current == previous.as_deref() {
                         continue;
                     }
                     return Ok(Some(StaleItem::ChangedEnv {
                         var: key.clone(),
                         previous: previous.clone(),
-                        current,
+                        current: current.map(Into::into),
                     }));
                 }
-                Ok(find_stale_file(mtime_cache, &dep_info, info.files.iter()))
+                if *checksum {
+                    Ok(find_stale_file(
+                        mtime_cache,
+                        checksum_cache,
+                        &dep_info,
+                        info.files.iter().map(|(file, checksum)| (file, *checksum)),
+                        *checksum,
+                    ))
+                } else {
+                    Ok(find_stale_file(
+                        mtime_cache,
+                        checksum_cache,
+                        &dep_info,
+                        info.files.into_keys().map(|p| (p, None)),
+                        *checksum,
+                    ))
+                }
             }
 
             // We need to verify that no paths listed in `paths` are newer than
             // the `output` path itself, or the last time the build script ran.
             LocalFingerprint::RerunIfChanged { output, paths } => Ok(find_stale_file(
                 mtime_cache,
+                checksum_cache,
                 &target_root.join(output),
-                paths.iter().map(|p| pkg_root.join(p)),
+                paths.iter().map(|p| (pkg_root.join(p), None)),
+                false,
             )),
 
             // These have no dependencies on the filesystem, and their values
@@ -965,14 +1011,23 @@ impl Fingerprint {
                     }
                 }
                 (
-                    LocalFingerprint::CheckDepInfo { dep_info: adep },
-                    LocalFingerprint::CheckDepInfo { dep_info: bdep },
+                    LocalFingerprint::CheckDepInfo {
+                        dep_info: adep,
+                        checksum: checksum_a,
+                    },
+                    LocalFingerprint::CheckDepInfo {
+                        dep_info: bdep,
+                        checksum: checksum_b,
+                    },
                 ) => {
                     if adep != bdep {
                         return DirtyReason::DepInfoOutputChanged {
                             old: bdep.clone(),
                             new: adep.clone(),
                         };
+                    }
+                    if checksum_a != checksum_b {
+                        return DirtyReason::ChecksumUseChanged { old: *checksum_b };
                     }
                 }
                 (
@@ -1077,6 +1132,7 @@ impl Fingerprint {
     fn check_filesystem(
         &mut self,
         mtime_cache: &mut HashMap<PathBuf, FileTime>,
+        checksum_cache: &mut HashMap<PathBuf, Checksum>,
         pkg_root: &Path,
         target_root: &Path,
         cargo_exe: &Path,
@@ -1181,9 +1237,14 @@ impl Fingerprint {
         // files for this package itself. If we do find something log a helpful
         // message and bail out so we stay stale.
         for local in self.local.get_mut().unwrap().iter() {
-            if let Some(item) =
-                local.find_stale_item(mtime_cache, pkg_root, target_root, cargo_exe, gctx)?
-            {
+            if let Some(item) = local.find_stale_item(
+                mtime_cache,
+                checksum_cache,
+                pkg_root,
+                target_root,
+                cargo_exe,
+                gctx,
+            )? {
                 item.log();
                 self.fs_status = FsStatus::StaleItem(item);
                 return Ok(());
@@ -1293,6 +1354,12 @@ impl StaleItem {
             StaleItem::MissingFile(path) => {
                 info!("stale: missing {:?}", path);
             }
+            StaleItem::UnableToReadFile(path) => {
+                info!("stale: unable to read {:?}", path);
+            }
+            StaleItem::FailedToReadMetadata(path) => {
+                info!("stale: couldn't read metadata {:?}", path);
+            }
             StaleItem::ChangedFile {
                 reference,
                 reference_mtime,
@@ -1302,6 +1369,27 @@ impl StaleItem {
                 info!("stale: changed {:?}", stale);
                 info!("          (vs) {:?}", reference);
                 info!("               {:?} < {:?}", reference_mtime, stale_mtime);
+            }
+            StaleItem::FileSizeChanged {
+                path,
+                new_size,
+                old_size,
+            } => {
+                info!("stale: changed {:?}", path);
+                info!("prior file size {old_size}");
+                info!("  new file size {new_size}");
+            }
+            StaleItem::ChangedChecksum {
+                source,
+                stored_checksum,
+                new_checksum,
+            } => {
+                info!("stale: changed {:?}", source);
+                info!("prior checksum {stored_checksum}");
+                info!("  new checksum {new_checksum}");
+            }
+            StaleItem::MissingChecksum(path) => {
+                info!("stale: no prior checksum {:?}", path);
             }
             StaleItem::ChangedEnv {
                 var,
@@ -1347,6 +1435,7 @@ fn calculate(build_runner: &mut BuildRunner<'_, '_>, unit: &Unit) -> CargoResult
     let cargo_exe = build_runner.bcx.gctx.cargo_exe()?;
     fingerprint.check_filesystem(
         &mut build_runner.mtime_cache,
+        &mut build_runner.checksum_cache,
         unit.pkg.root(),
         &target_root,
         cargo_exe,
@@ -1399,7 +1488,10 @@ fn calculate_normal(
     } else {
         let dep_info = dep_info_loc(build_runner, unit);
         let dep_info = dep_info.strip_prefix(&target_root).unwrap().to_path_buf();
-        vec![LocalFingerprint::CheckDepInfo { dep_info }]
+        vec![LocalFingerprint::CheckDepInfo {
+            dep_info,
+            checksum: build_runner.bcx.gctx.cli_unstable().checksum_freshness,
+        }]
     };
 
     // Figure out what the outputs of our unit is, and we'll be storing them
@@ -1421,34 +1513,12 @@ fn calculate_normal(
     }
     .to_vec();
 
-    // Include all the args from `[lints.rust.unexpected_cfgs.check-cfg]`
-    //
-    // HACK(#13975): duplicating the lookup logic here until `--check-cfg` is supported
-    // on Cargo's MSRV and we can centralize the logic in `lints_to_rustflags`
-    let mut lint_check_cfg = Vec::new();
-    if let Ok(Some(lints)) = unit.pkg.manifest().normalized_toml().normalized_lints() {
-        if let Some(rust_lints) = lints.get("rust") {
-            if let Some(unexpected_cfgs) = rust_lints.get("unexpected_cfgs") {
-                if let Some(config) = unexpected_cfgs.config() {
-                    if let Some(check_cfg) = config.get("check-cfg") {
-                        if let Ok(check_cfgs) =
-                            toml::Value::try_into::<Vec<String>>(check_cfg.clone())
-                        {
-                            lint_check_cfg = check_cfgs;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     let profile_hash = util::hash_u64((
         &unit.profile,
         unit.mode,
         build_runner.bcx.extra_args_for(unit),
         build_runner.lto[unit],
         unit.pkg.manifest().lint_rustflags(),
-        lint_check_cfg,
     ));
     // Include metadata since it is exposed as environment variables.
     let m = unit.pkg.manifest().metadata();
@@ -1840,41 +1910,6 @@ fn _compare_old_fingerprint(
     Ok(Some(new_fingerprint.compare(&old_fingerprint)))
 }
 
-/// Parses Cargo's internal [`EncodedDepInfo`] structure that was previously
-/// serialized to disk.
-///
-/// Note that this is not rustc's `*.d` files.
-///
-/// Also note that rustc's `*.d` files are translated to Cargo-specific
-/// `EncodedDepInfo` files after compilations have finished in
-/// [`translate_dep_info`].
-///
-/// Returns `None` if the file is corrupt or couldn't be read from disk. This
-/// indicates that the crate should likely be rebuilt.
-pub fn parse_dep_info(
-    pkg_root: &Path,
-    target_root: &Path,
-    dep_info: &Path,
-) -> CargoResult<Option<RustcDepInfo>> {
-    let Ok(data) = paths::read_bytes(dep_info) else {
-        return Ok(None);
-    };
-    let Some(info) = EncodedDepInfo::parse(&data) else {
-        tracing::warn!("failed to parse cargo's dep-info at {:?}", dep_info);
-        return Ok(None);
-    };
-    let mut ret = RustcDepInfo::default();
-    ret.env = info.env;
-    ret.files.extend(info.files.into_iter().map(|(ty, path)| {
-        match ty {
-            DepInfoPathType::PackageRootRelative => pkg_root.join(path),
-            // N.B. path might be absolute here in which case the join will have no effect
-            DepInfoPathType::TargetRootRelative => target_root.join(path),
-        }
-    }));
-    Ok(Some(ret))
-}
-
 /// Calculates the fingerprint of a unit thats contains no dep-info files.
 fn pkg_fingerprint(bcx: &BuildContext<'_, '_>, pkg: &Package) -> CargoResult<String> {
     let source_id = pkg.package_id().source_id();
@@ -1887,14 +1922,16 @@ fn pkg_fingerprint(bcx: &BuildContext<'_, '_>, pkg: &Package) -> CargoResult<Str
 }
 
 /// The `reference` file is considered as "stale" if any file from `paths` has a newer mtime.
-fn find_stale_file<I>(
+fn find_stale_file<I, P>(
     mtime_cache: &mut HashMap<PathBuf, FileTime>,
+    checksum_cache: &mut HashMap<PathBuf, Checksum>,
     reference: &Path,
     paths: I,
+    use_checksums: bool,
 ) -> Option<StaleItem>
 where
-    I: IntoIterator,
-    I::Item: AsRef<Path>,
+    I: IntoIterator<Item = (P, Option<(u64, Checksum)>)>,
+    P: AsRef<Path>,
 {
     let Ok(reference_mtime) = paths::mtime(reference) else {
         return Some(StaleItem::MissingFile(reference.to_path_buf()));
@@ -1909,8 +1946,7 @@ where
     } else {
         None
     };
-
-    for path in paths {
+    for (path, prior_checksum) in paths {
         let path = path.as_ref();
 
         // Assuming anything in cargo_home/{git, registry} is immutable
@@ -1922,44 +1958,82 @@ where
                 continue;
             }
         }
-        let path_mtime = match mtime_cache.entry(path.to_path_buf()) {
-            Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(v) => {
-                let Ok(mtime) = paths::mtime_recursive(path) else {
-                    return Some(StaleItem::MissingFile(path.to_path_buf()));
-                };
-                *v.insert(mtime)
+        if use_checksums {
+            let Some((file_len, prior_checksum)) = prior_checksum else {
+                return Some(StaleItem::MissingChecksum(path.to_path_buf()));
+            };
+            let path_buf = path.to_path_buf();
+
+            let path_checksum = match checksum_cache.entry(path_buf) {
+                Entry::Occupied(o) => *o.get(),
+                Entry::Vacant(v) => {
+                    let Ok(current_file_len) = fs::metadata(&path).map(|m| m.len()) else {
+                        return Some(StaleItem::FailedToReadMetadata(path.to_path_buf()));
+                    };
+                    if current_file_len != file_len {
+                        return Some(StaleItem::FileSizeChanged {
+                            path: path.to_path_buf(),
+                            new_size: current_file_len,
+                            old_size: file_len,
+                        });
+                    }
+                    let Ok(file) = File::open(path) else {
+                        return Some(StaleItem::MissingFile(path.to_path_buf()));
+                    };
+                    let Ok(checksum) = Checksum::compute(prior_checksum.algo(), file) else {
+                        return Some(StaleItem::UnableToReadFile(path.to_path_buf()));
+                    };
+                    *v.insert(checksum)
+                }
+            };
+            if path_checksum == prior_checksum {
+                continue;
             }
-        };
+            return Some(StaleItem::ChangedChecksum {
+                source: path.to_path_buf(),
+                stored_checksum: prior_checksum,
+                new_checksum: path_checksum,
+            });
+        } else {
+            let path_mtime = match mtime_cache.entry(path.to_path_buf()) {
+                Entry::Occupied(o) => *o.get(),
+                Entry::Vacant(v) => {
+                    let Ok(mtime) = paths::mtime_recursive(path) else {
+                        return Some(StaleItem::MissingFile(path.to_path_buf()));
+                    };
+                    *v.insert(mtime)
+                }
+            };
 
-        // TODO: fix #5918.
-        // Note that equal mtimes should be considered "stale". For filesystems with
-        // not much timestamp precision like 1s this is would be a conservative approximation
-        // to handle the case where a file is modified within the same second after
-        // a build starts. We want to make sure that incremental rebuilds pick that up!
-        //
-        // For filesystems with nanosecond precision it's been seen in the wild that
-        // its "nanosecond precision" isn't really nanosecond-accurate. It turns out that
-        // kernels may cache the current time so files created at different times actually
-        // list the same nanosecond precision. Some digging on #5919 picked up that the
-        // kernel caches the current time between timer ticks, which could mean that if
-        // a file is updated at most 10ms after a build starts then Cargo may not
-        // pick up the build changes.
-        //
-        // All in all, an equality check here would be a conservative assumption that,
-        // if equal, files were changed just after a previous build finished.
-        // Unfortunately this became problematic when (in #6484) cargo switch to more accurately
-        // measuring the start time of builds.
-        if path_mtime <= reference_mtime {
-            continue;
+            // TODO: fix #5918.
+            // Note that equal mtimes should be considered "stale". For filesystems with
+            // not much timestamp precision like 1s this is would be a conservative approximation
+            // to handle the case where a file is modified within the same second after
+            // a build starts. We want to make sure that incremental rebuilds pick that up!
+            //
+            // For filesystems with nanosecond precision it's been seen in the wild that
+            // its "nanosecond precision" isn't really nanosecond-accurate. It turns out that
+            // kernels may cache the current time so files created at different times actually
+            // list the same nanosecond precision. Some digging on #5919 picked up that the
+            // kernel caches the current time between timer ticks, which could mean that if
+            // a file is updated at most 10ms after a build starts then Cargo may not
+            // pick up the build changes.
+            //
+            // All in all, an equality check here would be a conservative assumption that,
+            // if equal, files were changed just after a previous build finished.
+            // Unfortunately this became problematic when (in #6484) cargo switch to more accurately
+            // measuring the start time of builds.
+            if path_mtime <= reference_mtime {
+                continue;
+            }
+
+            return Some(StaleItem::ChangedFile {
+                reference: reference.to_path_buf(),
+                reference_mtime,
+                stale: path.to_path_buf(),
+                stale_mtime: path_mtime,
+            });
         }
-
-        return Some(StaleItem::ChangedFile {
-            reference: reference.to_path_buf(),
-            reference_mtime,
-            stale: path.to_path_buf(),
-            stale_mtime: path_mtime,
-        });
     }
 
     debug!(
@@ -1967,286 +2041,4 @@ where
         reference, reference_mtime
     );
     None
-}
-
-/// Tells the associated path in [`EncodedDepInfo::files`] is relative to package root,
-/// target root, or absolute.
-enum DepInfoPathType {
-    /// src/, e.g. src/lib.rs
-    PackageRootRelative,
-    /// target/debug/deps/lib...
-    /// or an absolute path /.../sysroot/...
-    TargetRootRelative,
-}
-
-/// Parses the dep-info file coming out of rustc into a Cargo-specific format.
-///
-/// This function will parse `rustc_dep_info` as a makefile-style dep info to
-/// learn about the all files which a crate depends on. This is then
-/// re-serialized into the `cargo_dep_info` path in a Cargo-specific format.
-///
-/// The `pkg_root` argument here is the absolute path to the directory
-/// containing `Cargo.toml` for this crate that was compiled. The paths listed
-/// in the rustc dep-info file may or may not be absolute but we'll want to
-/// consider all of them relative to the `root` specified.
-///
-/// The `rustc_cwd` argument is the absolute path to the cwd of the compiler
-/// when it was invoked.
-///
-/// If the `allow_package` argument is true, then package-relative paths are
-/// included. If it is false, then package-relative paths are skipped and
-/// ignored (typically used for registry or git dependencies where we assume
-/// the source never changes, and we don't want the cost of running `stat` on
-/// all those files). See the module-level docs for the note about
-/// `-Zbinary-dep-depinfo` for more details on why this is done.
-///
-/// The serialized Cargo format will contain a list of files, all of which are
-/// relative if they're under `root`. or absolute if they're elsewhere.
-pub fn translate_dep_info(
-    rustc_dep_info: &Path,
-    cargo_dep_info: &Path,
-    rustc_cwd: &Path,
-    pkg_root: &Path,
-    target_root: &Path,
-    rustc_cmd: &ProcessBuilder,
-    allow_package: bool,
-) -> CargoResult<()> {
-    let depinfo = parse_rustc_dep_info(rustc_dep_info)?;
-
-    let target_root = try_canonicalize(target_root)?;
-    let pkg_root = try_canonicalize(pkg_root)?;
-    let mut on_disk_info = EncodedDepInfo::default();
-    on_disk_info.env = depinfo.env;
-
-    // This is a bit of a tricky statement, but here we're *removing* the
-    // dependency on environment variables that were defined specifically for
-    // the command itself. Environment variables returned by `get_envs` includes
-    // environment variables like:
-    //
-    // * `OUT_DIR` if applicable
-    // * env vars added by a build script, if any
-    //
-    // The general idea here is that the dep info file tells us what, when
-    // changed, should cause us to rebuild the crate. These environment
-    // variables are synthesized by Cargo and/or the build script, and the
-    // intention is that their values are tracked elsewhere for whether the
-    // crate needs to be rebuilt.
-    //
-    // For example a build script says when it needs to be rerun and otherwise
-    // it's assumed to produce the same output, so we're guaranteed that env
-    // vars defined by the build script will always be the same unless the build
-    // script itself reruns, in which case the crate will rerun anyway.
-    //
-    // For things like `OUT_DIR` it's a bit sketchy for now. Most of the time
-    // that's used for code generation but this is technically buggy where if
-    // you write a binary that does `println!("{}", env!("OUT_DIR"))` we won't
-    // recompile that if you move the target directory. Hopefully that's not too
-    // bad of an issue for now...
-    //
-    // This also includes `CARGO` since if the code is explicitly wanting to
-    // know that path, it should be rebuilt if it changes. The CARGO path is
-    // not tracked elsewhere in the fingerprint.
-    on_disk_info
-        .env
-        .retain(|(key, _)| !rustc_cmd.get_envs().contains_key(key) || key == CARGO_ENV);
-
-    for file in depinfo.files {
-        // The path may be absolute or relative, canonical or not. Make sure
-        // it is canonicalized so we are comparing the same kinds of paths.
-        let abs_file = rustc_cwd.join(file);
-        // If canonicalization fails, just use the abs path. There is currently
-        // a bug where --remap-path-prefix is affecting .d files, causing them
-        // to point to non-existent paths.
-        let canon_file = try_canonicalize(&abs_file).unwrap_or_else(|_| abs_file.clone());
-
-        let (ty, path) = if let Ok(stripped) = canon_file.strip_prefix(&target_root) {
-            (DepInfoPathType::TargetRootRelative, stripped)
-        } else if let Ok(stripped) = canon_file.strip_prefix(&pkg_root) {
-            if !allow_package {
-                continue;
-            }
-            (DepInfoPathType::PackageRootRelative, stripped)
-        } else {
-            // It's definitely not target root relative, but this is an absolute path (since it was
-            // joined to rustc_cwd) and as such re-joining it later to the target root will have no
-            // effect.
-            (DepInfoPathType::TargetRootRelative, &*abs_file)
-        };
-        on_disk_info.files.push((ty, path.to_owned()));
-    }
-    paths::write(cargo_dep_info, on_disk_info.serialize()?)?;
-    Ok(())
-}
-
-/// The representation of the `.d` dep-info file generated by rustc
-#[derive(Default)]
-pub struct RustcDepInfo {
-    /// The list of files that the main target in the dep-info file depends on.
-    pub files: Vec<PathBuf>,
-    /// The list of environment variables we found that the rustc compilation
-    /// depends on.
-    ///
-    /// The first element of the pair is the name of the env var and the second
-    /// item is the value. `Some` means that the env var was set, and `None`
-    /// means that the env var wasn't actually set and the compilation depends
-    /// on it not being set.
-    pub env: Vec<(String, Option<String>)>,
-}
-
-/// Same as [`RustcDepInfo`] except avoids absolute paths as much as possible to
-/// allow moving around the target directory.
-///
-/// This is also stored in an optimized format to make parsing it fast because
-/// Cargo will read it for crates on all future compilations.
-#[derive(Default)]
-struct EncodedDepInfo {
-    files: Vec<(DepInfoPathType, PathBuf)>,
-    env: Vec<(String, Option<String>)>,
-}
-
-impl EncodedDepInfo {
-    fn parse(mut bytes: &[u8]) -> Option<EncodedDepInfo> {
-        let bytes = &mut bytes;
-        let nfiles = read_usize(bytes)?;
-        let mut files = Vec::with_capacity(nfiles as usize);
-        for _ in 0..nfiles {
-            let ty = match read_u8(bytes)? {
-                0 => DepInfoPathType::PackageRootRelative,
-                1 => DepInfoPathType::TargetRootRelative,
-                _ => return None,
-            };
-            let bytes = read_bytes(bytes)?;
-            files.push((ty, paths::bytes2path(bytes).ok()?));
-        }
-
-        let nenv = read_usize(bytes)?;
-        let mut env = Vec::with_capacity(nenv as usize);
-        for _ in 0..nenv {
-            let key = str::from_utf8(read_bytes(bytes)?).ok()?.to_string();
-            let val = match read_u8(bytes)? {
-                0 => None,
-                1 => Some(str::from_utf8(read_bytes(bytes)?).ok()?.to_string()),
-                _ => return None,
-            };
-            env.push((key, val));
-        }
-        return Some(EncodedDepInfo { files, env });
-
-        fn read_usize(bytes: &mut &[u8]) -> Option<usize> {
-            let ret = bytes.get(..4)?;
-            *bytes = &bytes[4..];
-            Some(u32::from_le_bytes(ret.try_into().unwrap()) as usize)
-        }
-
-        fn read_u8(bytes: &mut &[u8]) -> Option<u8> {
-            let ret = *bytes.get(0)?;
-            *bytes = &bytes[1..];
-            Some(ret)
-        }
-
-        fn read_bytes<'a>(bytes: &mut &'a [u8]) -> Option<&'a [u8]> {
-            let n = read_usize(bytes)? as usize;
-            let ret = bytes.get(..n)?;
-            *bytes = &bytes[n..];
-            Some(ret)
-        }
-    }
-
-    fn serialize(&self) -> CargoResult<Vec<u8>> {
-        let mut ret = Vec::new();
-        let dst = &mut ret;
-        write_usize(dst, self.files.len());
-        for (ty, file) in self.files.iter() {
-            match ty {
-                DepInfoPathType::PackageRootRelative => dst.push(0),
-                DepInfoPathType::TargetRootRelative => dst.push(1),
-            }
-            write_bytes(dst, paths::path2bytes(file)?);
-        }
-
-        write_usize(dst, self.env.len());
-        for (key, val) in self.env.iter() {
-            write_bytes(dst, key);
-            match val {
-                None => dst.push(0),
-                Some(val) => {
-                    dst.push(1);
-                    write_bytes(dst, val);
-                }
-            }
-        }
-        return Ok(ret);
-
-        fn write_bytes(dst: &mut Vec<u8>, val: impl AsRef<[u8]>) {
-            let val = val.as_ref();
-            write_usize(dst, val.len());
-            dst.extend_from_slice(val);
-        }
-
-        fn write_usize(dst: &mut Vec<u8>, val: usize) {
-            dst.extend(&u32::to_le_bytes(val as u32));
-        }
-    }
-}
-
-/// Parse the `.d` dep-info file generated by rustc.
-pub fn parse_rustc_dep_info(rustc_dep_info: &Path) -> CargoResult<RustcDepInfo> {
-    let contents = paths::read(rustc_dep_info)?;
-    let mut ret = RustcDepInfo::default();
-    let mut found_deps = false;
-
-    for line in contents.lines() {
-        if let Some(rest) = line.strip_prefix("# env-dep:") {
-            let mut parts = rest.splitn(2, '=');
-            let Some(env_var) = parts.next() else {
-                continue;
-            };
-            let env_val = match parts.next() {
-                Some(s) => Some(unescape_env(s)?),
-                None => None,
-            };
-            ret.env.push((unescape_env(env_var)?, env_val));
-        } else if let Some(pos) = line.find(": ") {
-            if found_deps {
-                continue;
-            }
-            found_deps = true;
-            let mut deps = line[pos + 2..].split_whitespace();
-
-            while let Some(s) = deps.next() {
-                let mut file = s.to_string();
-                while file.ends_with('\\') {
-                    file.pop();
-                    file.push(' ');
-                    file.push_str(deps.next().ok_or_else(|| {
-                        internal("malformed dep-info format, trailing \\".to_string())
-                    })?);
-                }
-                ret.files.push(file.into());
-            }
-        }
-    }
-    return Ok(ret);
-
-    // rustc tries to fit env var names and values all on a single line, which
-    // means it needs to escape `\r` and `\n`. The escape syntax used is "\n"
-    // which means that `\` also needs to be escaped.
-    fn unescape_env(s: &str) -> CargoResult<String> {
-        let mut ret = String::with_capacity(s.len());
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c != '\\' {
-                ret.push(c);
-                continue;
-            }
-            match chars.next() {
-                Some('\\') => ret.push('\\'),
-                Some('n') => ret.push('\n'),
-                Some('r') => ret.push('\r'),
-                Some(c) => bail!("unknown escape character `{}`", c),
-                None => bail!("unterminated escape character"),
-            }
-        }
-        Ok(ret)
-    }
 }

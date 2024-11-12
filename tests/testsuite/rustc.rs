@@ -220,7 +220,7 @@ fn build_with_crate_type_for_foo_with_deps() {
 
     p.cargo("rustc -v --crate-type cdylib")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] a v0.1.0 ([ROOT]/foo/a)
 [RUNNING] `rustc --crate-name a --edition=2015 a/src/lib.rs [..]--crate-type lib [..]`
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -238,7 +238,7 @@ fn build_with_crate_types_for_foo() {
     p.cargo("rustc -v --crate-type lib,cdylib")
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `rustc --crate-name foo --edition=2015 src/lib.rs [..]--crate-type lib,cdylib [..]`
+[RUNNING] `rustc --crate-name foo --edition=2015 src/lib.rs [..]--crate-type lib --crate-type cdylib [..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -302,7 +302,7 @@ fn build_with_crate_types_to_example() {
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo --edition=2015 src/lib.rs [..]--crate-type lib [..]`
-[RUNNING] `rustc --crate-name ex --edition=2015 examples/ex.rs [..]--crate-type lib,cdylib [..]`
+[RUNNING] `rustc --crate-name ex --edition=2015 examples/ex.rs [..]--crate-type lib --crate-type cdylib [..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -338,7 +338,7 @@ fn build_with_crate_types_to_one_of_multi_examples() {
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo --edition=2015 src/lib.rs [..]--crate-type lib [..]`
-[RUNNING] `rustc --crate-name ex1 --edition=2015 examples/ex1.rs [..]--crate-type lib,cdylib [..]`
+[RUNNING] `rustc --crate-name ex1 --edition=2015 examples/ex1.rs [..]--crate-type lib --crate-type cdylib [..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -391,7 +391,7 @@ fn build_foo_with_bar_dependency() {
 
     foo.cargo("rustc -v -- -C debug-assertions")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.1.0 ([ROOT]/bar)
 [RUNNING] `rustc --crate-name bar [..] -C debuginfo=2[..]`
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -428,7 +428,7 @@ fn build_only_bar_dependency() {
 
     foo.cargo("rustc -v -p bar -- -C debug-assertions")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.1.0 ([ROOT]/bar)
 [RUNNING] `rustc --crate-name bar [..]--crate-type lib [..] -C debug-assertions [..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -437,7 +437,6 @@ fn build_only_bar_dependency() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn targets_selected_default() {
     let p = project().file("src/main.rs", "fn main() {}").build();
@@ -589,7 +588,6 @@ fn rustc_with_other_profile() {
     p.cargo("rustc --profile test").run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn rustc_fingerprint() {
     // Verify that the fingerprint includes the rustc args.
@@ -792,6 +790,69 @@ windows
 ...
 "#]]
             .unordered(),
+        )
+        .run();
+}
+
+#[cargo_test]
+fn precedence() {
+    // Ensure that the precedence of cargo-rustc is only lower than RUSTFLAGS,
+    // but higher than most flags set by cargo.
+    //
+    // See rust-lang/cargo#14346
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            edition = "2021"
+
+            [lints.rust]
+            unexpected_cfgs = "allow"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("rustc --release -v -- --cfg cargo_rustc -C strip=symbols")
+        .env("RUSTFLAGS", "--cfg from_rustflags")
+        .masquerade_as_nightly_cargo(&["cargo-rustc-precedence"])
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.0 ([ROOT]/foo)
+[RUNNING] `rustc [..]-C strip=debuginfo [..]--cfg cargo_rustc -C strip=symbols --cfg from_rustflags`
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    // Ensure the short-live env var to work
+    p.cargo("clean").run();
+    p.cargo("rustc --release -v -- --cfg cargo_rustc -C strip=symbols")
+        .env("RUSTFLAGS", "--cfg from_rustflags")
+        .env("__CARGO_RUSTC_ORIG_ARGS_PRIO", "1")
+        .masquerade_as_nightly_cargo(&["cargo-rustc-precedence"])
+        .with_stderr_data(
+            str![[r#"
+[COMPILING] foo v0.0.0 ([ROOT]/foo)
+[RUNNING] `rustc [..]--cfg cargo_rustc -C strip=symbols [..]-C strip=debuginfo [..]--cfg from_rustflags`
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+
+"#]]
+        )
+        .run();
+
+    // Ensure non-nightly to work as before
+    p.cargo("clean").run();
+    p.cargo("rustc --release -v -- --cfg cargo_rustc -C strip=symbols")
+        .env("RUSTFLAGS", "--cfg from_rustflags")
+        .with_stderr_data(
+            str![[r#"
+[COMPILING] foo v0.0.0 ([ROOT]/foo)
+[RUNNING] `rustc [..]--cfg cargo_rustc -C strip=symbols [..]-C strip=debuginfo [..]--cfg from_rustflags`
+[FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
+
+"#]]
         )
         .run();
 }

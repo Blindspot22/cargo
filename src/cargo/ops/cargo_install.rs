@@ -46,7 +46,6 @@ struct InstallablePackage<'gctx> {
     vers: Option<VersionReq>,
     force: bool,
     no_track: bool,
-
     pkg: Package,
     ws: Workspace<'gctx>,
     rustc: Rustc,
@@ -68,6 +67,7 @@ impl<'gctx> InstallablePackage<'gctx> {
         no_track: bool,
         needs_update_if_source_is_index: bool,
         current_rust_version: Option<&PartialVersion>,
+        lockfile_path: Option<&Path>,
     ) -> CargoResult<Option<Self>> {
         if let Some(name) = krate {
             if name == "." {
@@ -155,6 +155,7 @@ impl<'gctx> InstallablePackage<'gctx> {
                     &root,
                     &dst,
                     force,
+                    lockfile_path,
                 ) {
                     let msg = format!(
                         "package `{}` is already installed, use --force to override",
@@ -179,15 +180,32 @@ impl<'gctx> InstallablePackage<'gctx> {
             }
         };
 
-        let (ws, rustc, target) =
-            make_ws_rustc_target(gctx, &original_opts, &source_id, pkg.clone())?;
-        // If we're installing in --locked mode and there's no `Cargo.lock` published
-        // ie. the bin was published before https://github.com/rust-lang/cargo/pull/7026
-        if gctx.locked() && !ws.root().join("Cargo.lock").exists() {
-            gctx.shell().warn(format!(
-                "no Cargo.lock file published in {}",
-                pkg.to_string()
-            ))?;
+        let (ws, rustc, target) = make_ws_rustc_target(
+            gctx,
+            &original_opts,
+            &source_id,
+            pkg.clone(),
+            lockfile_path.clone(),
+        )?;
+
+        if gctx.locked() {
+            // When --lockfile-path is set, check that passed lock file exists
+            // (unlike the usual flag behavior, lockfile won't be created as we imply --locked)
+            if let Some(requested_lockfile_path) = ws.requested_lockfile_path() {
+                if !requested_lockfile_path.is_file() {
+                    bail!(
+                        "no Cargo.lock file found in the requested path {}",
+                        requested_lockfile_path.display()
+                    );
+                }
+            // If we're installing in --locked mode and there's no `Cargo.lock` published
+            // ie. the bin was published before https://github.com/rust-lang/cargo/pull/7026
+            } else if !ws.root().join("Cargo.lock").exists() {
+                gctx.shell().warn(format!(
+                    "no Cargo.lock file published in {}",
+                    pkg.to_string()
+                ))?;
+            }
         }
         let pkg = if source_id.is_git() {
             // Don't use ws.current() in order to keep the package source as a git source so that
@@ -246,7 +264,6 @@ impl<'gctx> InstallablePackage<'gctx> {
             vers: vers.cloned(),
             force,
             no_track,
-
             pkg,
             ws,
             rustc,
@@ -297,7 +314,7 @@ impl<'gctx> InstallablePackage<'gctx> {
         Ok(duplicates)
     }
 
-    fn install_one(mut self) -> CargoResult<bool> {
+    fn install_one(mut self, dry_run: bool) -> CargoResult<bool> {
         self.gctx.shell().status("Installing", &self.pkg)?;
 
         let dst = self.root.join("bin").into_path_unlocked();
@@ -321,6 +338,7 @@ impl<'gctx> InstallablePackage<'gctx> {
         self.check_yanked_install()?;
 
         let exec: Arc<dyn Executor> = Arc::new(DefaultExecutor);
+        self.opts.build_config.dry_run = dry_run;
         let compile = ops::compile_ws(&self.ws, &self.opts, &exec).with_context(|| {
             if let Some(td) = td_opt.take() {
                 // preserve the temporary directory, so the user can inspect it
@@ -419,13 +437,15 @@ impl<'gctx> InstallablePackage<'gctx> {
         let staging_dir = TempFileBuilder::new()
             .prefix("cargo-install")
             .tempdir_in(&dst)?;
-        for &(bin, src) in binaries.iter() {
-            let dst = staging_dir.path().join(bin);
-            // Try to move if `target_dir` is transient.
-            if !self.source_id.is_path() && fs::rename(src, &dst).is_ok() {
-                continue;
+        if !dry_run {
+            for &(bin, src) in binaries.iter() {
+                let dst = staging_dir.path().join(bin);
+                // Try to move if `target_dir` is transient.
+                if !self.source_id.is_path() && fs::rename(src, &dst).is_ok() {
+                    continue;
+                }
+                paths::copy(src, &dst)?;
             }
-            paths::copy(src, &dst)?;
         }
 
         let (to_replace, to_install): (Vec<&str>, Vec<&str>) = binaries
@@ -441,11 +461,13 @@ impl<'gctx> InstallablePackage<'gctx> {
             let src = staging_dir.path().join(bin);
             let dst = dst.join(bin);
             self.gctx.shell().status("Installing", dst.display())?;
-            fs::rename(&src, &dst).with_context(|| {
-                format!("failed to move `{}` to `{}`", src.display(), dst.display())
-            })?;
-            installed.bins.push(dst);
-            successful_bins.insert(bin.to_string());
+            if !dry_run {
+                fs::rename(&src, &dst).with_context(|| {
+                    format!("failed to move `{}` to `{}`", src.display(), dst.display())
+                })?;
+                installed.bins.push(dst);
+                successful_bins.insert(bin.to_string());
+            }
         }
 
         // Repeat for binaries which replace existing ones but don't pop the error
@@ -456,10 +478,12 @@ impl<'gctx> InstallablePackage<'gctx> {
                     let src = staging_dir.path().join(bin);
                     let dst = dst.join(bin);
                     self.gctx.shell().status("Replacing", dst.display())?;
-                    fs::rename(&src, &dst).with_context(|| {
-                        format!("failed to move `{}` to `{}`", src.display(), dst.display())
-                    })?;
-                    successful_bins.insert(bin.to_string());
+                    if !dry_run {
+                        fs::rename(&src, &dst).with_context(|| {
+                            format!("failed to move `{}` to `{}`", src.display(), dst.display())
+                        })?;
+                        successful_bins.insert(bin.to_string());
+                    }
                 }
                 Ok(())
             };
@@ -476,9 +500,14 @@ impl<'gctx> InstallablePackage<'gctx> {
                 &self.rustc.verbose_version,
             );
 
-            if let Err(e) =
-                remove_orphaned_bins(&self.ws, &mut tracker, &duplicates, &self.pkg, &dst)
-            {
+            if let Err(e) = remove_orphaned_bins(
+                &self.ws,
+                &mut tracker,
+                &duplicates,
+                &self.pkg,
+                &dst,
+                dry_run,
+            ) {
                 // Don't hard error on remove.
                 self.gctx
                     .shell()
@@ -515,7 +544,10 @@ impl<'gctx> InstallablePackage<'gctx> {
             }
         }
 
-        if duplicates.is_empty() {
+        if dry_run {
+            self.gctx.shell().warn("aborting install due to dry run")?;
+            Ok(true)
+        } else if duplicates.is_empty() {
             self.gctx.shell().status(
                 "Installed",
                 format!(
@@ -620,6 +652,8 @@ pub fn install(
     opts: &ops::CompileOptions,
     force: bool,
     no_track: bool,
+    dry_run: bool,
+    lockfile_path: Option<&Path>,
 ) -> CargoResult<()> {
     let root = resolve_root(root, gctx)?;
     let dst = root.join("bin").into_path_unlocked();
@@ -651,10 +685,11 @@ pub fn install(
             no_track,
             true,
             current_rust_version.as_ref(),
+            lockfile_path,
         )?;
         let mut installed_anything = true;
         if let Some(installable_pkg) = installable_pkg {
-            installed_anything = installable_pkg.install_one()?;
+            installed_anything = installable_pkg.install_one(dry_run)?;
         }
         (installed_anything, false)
     } else {
@@ -682,6 +717,7 @@ pub fn install(
                     no_track,
                     !did_update,
                     current_rust_version.as_ref(),
+                    lockfile_path,
                 ) {
                     Ok(Some(installable_pkg)) => {
                         did_update = true;
@@ -705,7 +741,7 @@ pub fn install(
 
         let install_results: Vec<_> = pkgs_to_install
             .into_iter()
-            .map(|(krate, installable_pkg)| (krate, installable_pkg.install_one()))
+            .map(|(krate, installable_pkg)| (krate, installable_pkg.install_one(dry_run)))
             .collect();
 
         for (krate, result) in install_results {
@@ -788,6 +824,7 @@ fn installed_exact_package<T>(
     root: &Filesystem,
     dst: &Path,
     force: bool,
+    lockfile_path: Option<&Path>,
 ) -> CargoResult<Option<Package>>
 where
     T: Source,
@@ -803,7 +840,7 @@ where
     // best-effort check to see if we can avoid hitting the network.
     if let Ok(pkg) = select_dep_pkg(source, dep, gctx, false, None) {
         let (_ws, rustc, target) =
-            make_ws_rustc_target(gctx, opts, &source.source_id(), pkg.clone())?;
+            make_ws_rustc_target(gctx, opts, &source.source_id(), pkg.clone(), lockfile_path)?;
         if let Ok(true) = is_installed(&pkg, gctx, opts, &rustc, &target, root, dst, force) {
             return Ok(Some(pkg));
         }
@@ -816,6 +853,7 @@ fn make_ws_rustc_target<'gctx>(
     opts: &ops::CompileOptions,
     source_id: &SourceId,
     pkg: Package,
+    lockfile_path: Option<&Path>,
 ) -> CargoResult<(Workspace<'gctx>, Rustc, String)> {
     let mut ws = if source_id.is_git() || source_id.is_path() {
         Workspace::new(pkg.manifest_path(), gctx)?
@@ -825,6 +863,11 @@ fn make_ws_rustc_target<'gctx>(
         ws
     };
     ws.set_ignore_lock(gctx.lock_update_allowed());
+    ws.set_requested_lockfile_path(lockfile_path.map(|p| p.to_path_buf()));
+    // if --lockfile-path is set, imply --locked
+    if ws.requested_lockfile_path().is_some() {
+        ws.set_ignore_lock(false);
+    }
     ws.set_require_optional_deps(false);
 
     let rustc = gctx.load_global_rustc(Some(&ws))?;
@@ -857,6 +900,7 @@ fn remove_orphaned_bins(
     duplicates: &BTreeMap<String, Option<PackageId>>,
     pkg: &Package,
     dst: &Path,
+    dry_run: bool,
 ) -> CargoResult<()> {
     let filter = ops::CompileFilter::new_all_targets();
     let all_self_names = exe_names(pkg, &filter);
@@ -894,8 +938,10 @@ fn remove_orphaned_bins(
                         old_pkg
                     ),
                 )?;
-                paths::remove_file(&full_path)
-                    .with_context(|| format!("failed to remove {:?}", full_path))?;
+                if !dry_run {
+                    paths::remove_file(&full_path)
+                        .with_context(|| format!("failed to remove {:?}", full_path))?;
+                }
             }
         }
     }

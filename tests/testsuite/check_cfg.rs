@@ -30,7 +30,6 @@ macro_rules! x {
     }};
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features() {
     let p = project()
@@ -56,7 +55,6 @@ fn features() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_with_deps() {
     let p = project()
@@ -87,7 +85,6 @@ fn features_with_deps() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_with_opt_deps() {
     let p = project()
@@ -119,7 +116,6 @@ fn features_with_opt_deps() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_with_namespaced_features() {
     let p = project()
@@ -150,7 +146,6 @@ fn features_with_namespaced_features() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_fingerprint() {
     let p = project()
@@ -228,7 +223,6 @@ fn features_fingerprint() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn well_known_names_values() {
     let p = project()
@@ -242,7 +236,6 @@ fn well_known_names_values() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_test() {
     let p = project()
@@ -268,7 +261,6 @@ fn features_test() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_doctest() {
     let p = project()
@@ -297,7 +289,6 @@ fn features_doctest() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn well_known_names_values_test() {
     let p = project()
@@ -311,7 +302,6 @@ fn well_known_names_values_test() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn well_known_names_values_doctest() {
     let p = project()
@@ -327,7 +317,6 @@ fn well_known_names_values_doctest() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn features_doc() {
     let p = project()
@@ -354,7 +343,6 @@ fn features_doc() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn build_script_feedback() {
     let p = project()
@@ -382,7 +370,6 @@ fn build_script_feedback() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn build_script_doc() {
     let p = project()
@@ -421,7 +408,6 @@ fn build_script_doc() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn build_script_override() {
     let target = cargo_test_support::rustc_host();
@@ -531,7 +517,6 @@ test [..] ... ok
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_simple() {
     let p = project()
@@ -557,7 +542,6 @@ fn config_simple() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_workspace() {
     let p = project()
@@ -599,7 +583,6 @@ fn config_workspace() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_workspace_not_inherited() {
     let p = project()
@@ -631,7 +614,6 @@ fn config_workspace_not_inherited() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_invalid_position() {
     let p = project()
@@ -707,8 +689,11 @@ fn config_invalid_not_list() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] `lints.rust.unexpected_cfgs.check-cfg` must be a list of string
-...
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  `lints.rust.unexpected_cfgs.check-cfg` must be a list of string
+
 "#]])
         .run();
 }
@@ -734,13 +719,15 @@ fn config_invalid_not_list_string() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] `lints.rust.unexpected_cfgs.check-cfg` must be a list of string
-...
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  `lints.rust.unexpected_cfgs.check-cfg` must be a list of string
+
 "#]])
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_and_features() {
     let p = project()
@@ -830,7 +817,6 @@ fn config_with_cargo_test() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_and_build_script() {
     let p = project()
@@ -860,7 +846,6 @@ fn config_and_build_script() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_features_and_build_script() {
     let p = project()
@@ -896,7 +881,6 @@ fn config_features_and_build_script() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn config_fingerprint() {
     let p = project()
@@ -939,7 +923,7 @@ fn config_fingerprint() {
 
     p.cargo("check -v")
         // we check that the fingerprint is indeed dirty
-        .with_stderr_contains("[..]Dirty[..]the profile configuration changed")
+        .with_stderr_contains("[..][DIRTY][..]the profile configuration changed")
         // that cause rustc to be called again with the new check-cfg args
         .with_stderr_contains(x!("rustc" => "cfg" of "bar"))
         .with_stderr_contains(x!("rustc" => "cfg" of "foo"))

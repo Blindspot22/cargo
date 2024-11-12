@@ -233,7 +233,6 @@ the future. For more information, see <https://github.com/rust-lang/cargo/issues
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn link_arg_transitive_not_allowed() {
     // Verify that transitive dependencies don't pass link args.
@@ -275,7 +274,7 @@ fn link_arg_transitive_not_allowed() {
     p.cargo("build -v")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
 [COMPILING] bar v1.0.0

@@ -18,6 +18,7 @@ use cargo::core::global_cache_tracker::{self, DeferredGlobalLastUse, GlobalCache
 use cargo::util::cache_lock::CacheLockMode;
 use cargo::util::interning::InternedString;
 use cargo::GlobalContext;
+use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::paths;
 use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{Package, RegistryBuilder};
@@ -439,7 +440,7 @@ fn frequency() {
         .env("CARGO_GC_AUTO_FREQUENCY", "1 day")
         .masquerade_as_nightly_cargo(&["gc"])
         .run();
-    assert_eq!(get_index_names().len(), 1);
+    assert_eq!(get_index_names().len(), 0);
     assert_eq!(get_registry_names("src").len(), 0);
     assert_eq!(get_registry_names("cache").len(), 0);
 }
@@ -613,7 +614,7 @@ fn auto_gc_various_commands() {
             .acquire_package_cache_lock(CacheLockMode::MutateExclusive)
             .unwrap();
         let indexes = tracker.registry_index_all().unwrap();
-        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes.len(), 0);
         let crates = tracker.registry_crate_all().unwrap();
         assert_eq!(crates.len(), 0);
         let srcs = tracker.registry_src_all().unwrap();
@@ -749,7 +750,6 @@ fn both_git_and_http_index_cleans() {
     drop(lock);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn clean_gc_dry_run() {
     // Basic `clean --gc --dry-run` test.
@@ -772,16 +772,19 @@ fn clean_gc_dry_run() {
     let index = glob_registry("index").ls_r();
     let src = glob_registry("src").ls_r();
     let cache = glob_registry("cache").ls_r();
-    let expected_files = index
+    let mut expected_files = index
         .iter()
         .chain(src.iter())
         .chain(cache.iter())
         .map(|p| p.to_str().unwrap())
         .join("\n");
+    expected_files.push_str("\n");
+    let expected_files = snapbox::filter::normalize_paths(&expected_files);
+    let expected_files = assert_e2e().redactions().redact(&expected_files);
 
     p.cargo("clean gc --dry-run -v -Zgc")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stdout_unordered(&expected_files)
+        .with_stdout_data(expected_files.as_str().unordered())
         .with_stderr_data(str![[r#"
 [SUMMARY] [FILE_NUM] files, [FILE_SIZE]B total
 [WARNING] no files deleted due to --dry-run
@@ -792,7 +795,7 @@ fn clean_gc_dry_run() {
     // Again, make sure the information is still tracked.
     p.cargo("clean gc --dry-run -v -Zgc")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stdout_unordered(&expected_files)
+        .with_stdout_data(expected_files.as_str().unordered())
         .with_stderr_data(str![[r#"
 [SUMMARY] [FILE_NUM] files, [FILE_SIZE]B total
 [WARNING] no files deleted due to --dry-run
@@ -895,7 +898,6 @@ fn tracks_sizes() {
     assert!(db_sizes[1] > 26000);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn max_size() {
     // Checks --max-crate-size and --max-src-size with various cleaning thresholds.
@@ -924,20 +926,20 @@ fn max_size() {
         .collect();
 
     // This exercises the different boundary conditions.
-    for (clean_size, files, bytes) in [
-        (22, 0, 0),
-        (21, 1, 6),
-        (16, 1, 6),
-        (15, 2, 8),
-        (14, 2, 8),
-        (13, 3, 9),
-        (12, 4, 12),
-        (10, 4, 12),
-        (9, 5, 16),
-        (6, 5, 16),
-        (5, 6, 21),
-        (1, 6, 21),
-        (0, 7, 22),
+    for (clean_size, files) in [
+        (22, 0),
+        (21, 1),
+        (16, 1),
+        (15, 2),
+        (14, 2),
+        (13, 3),
+        (12, 4),
+        (10, 4),
+        (9, 5),
+        (6, 5),
+        (5, 6),
+        (1, 6),
+        (0, 7),
     ] {
         let (removed, kept) = names_by_timestamp.split_at(files);
         // --max-crate-size
@@ -947,19 +949,21 @@ fn max_size() {
             writeln!(stderr, "[REMOVING] [..]{name}.crate").unwrap();
         }
         let total_display = if removed.is_empty() {
-            String::new()
+            ""
         } else {
-            format!(", {bytes}B total")
+            ", [FILE_SIZE]B total"
         };
-        let files_display = if files == 1 {
-            format!("1 file")
+        let files_display = if files == 0 {
+            "0 files"
+        } else if files == 1 {
+            "1 file"
         } else {
-            format!("{files} files")
+            "[FILE_NUM] files"
         };
-        write!(stderr, "[REMOVED] {files_display}{total_display}").unwrap();
+        writeln!(stderr, "[REMOVED] {files_display}{total_display}").unwrap();
         cargo_process(&format!("clean gc -Zgc -v --max-crate-size={clean_size}"))
             .masquerade_as_nightly_cargo(&["gc"])
-            .with_stderr_unordered(&stderr)
+            .with_stderr_data(stderr.unordered())
             .run();
         for name in kept {
             assert!(cache_dir.join(format!("{name}.crate")).exists());
@@ -974,15 +978,15 @@ fn max_size() {
         for name in removed {
             writeln!(stderr, "[REMOVING] [..]{name}").unwrap();
         }
-        let total_display = if files == 0 {
-            String::new()
+        let total_display = if removed.is_empty() {
+            ""
         } else {
-            format!(", {bytes}B total")
+            ", [FILE_SIZE]B total"
         };
-        write!(stderr, "[REMOVED] {files_display}{total_display}").unwrap();
+        writeln!(stderr, "[REMOVED] {files_display}{total_display}").unwrap();
         cargo_process(&format!("clean gc -Zgc -v --max-src-size={clean_size}"))
             .masquerade_as_nightly_cargo(&["gc"])
-            .with_stderr_unordered(&stderr)
+            .with_stderr_data(stderr.unordered())
             .run();
         for name in kept {
             assert!(src_dir.join(name).exists());
@@ -993,7 +997,6 @@ fn max_size() {
     }
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn max_size_untracked_crate() {
     // When a .crate file exists from an older version of cargo that did not
@@ -1018,7 +1021,10 @@ fn max_size_untracked_crate() {
     // This should scan the directory and populate the db with the size information.
     cargo_process("clean gc -Zgc -v --max-crate-size=100000")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr("[REMOVED] 0 files")
+        .with_stderr_data(str![[r#"
+[REMOVED] 0 files
+
+"#]])
         .run();
     // Check that it stored the size data.
     let _lock = gctx
@@ -1070,7 +1076,6 @@ fn max_size_untracked_verify(gctx: &GlobalContext) {
     drop(lock);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn max_size_untracked_src_from_use() {
     // When a src directory exists from an older version of cargo that did not
@@ -1095,12 +1100,14 @@ fn max_size_untracked_src_from_use() {
     // Fix the size.
     p.cargo("clean gc -v --max-src-size=10000 -Zgc")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr("[REMOVED] 0 files")
+        .with_stderr_data(str![[r#"
+[REMOVED] 0 files
+
+"#]])
         .run();
     max_size_untracked_verify(&gctx);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn max_size_untracked_src_from_clean() {
     // When a src directory exists from an older version of cargo that did not
@@ -1111,12 +1118,14 @@ fn max_size_untracked_src_from_clean() {
     // Clean should scan the src and update the db.
     p.cargo("clean gc -v --max-src-size=10000 -Zgc")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr("[REMOVED] 0 files")
+        .with_stderr_data(str![[r#"
+[REMOVED] 0 files
+
+"#]])
         .run();
     max_size_untracked_verify(&gctx);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn max_download_size() {
     // --max-download-size
@@ -1134,13 +1143,13 @@ fn max_download_size() {
         ("b-1.0.0", 1, 1, 7),
     ];
 
-    for (max_size, num_deleted, files_deleted, bytes) in [
-        (30, 0, 0, 0),
-        (29, 1, 1, 5),
-        (24, 2, 2, 9),
-        (20, 3, 3, 12),
-        (1, 7, 7, 29),
-        (0, 8, 8, 30),
+    for (max_size, num_deleted, files_deleted) in [
+        (30, 0, 0),
+        (29, 1, 1),
+        (24, 2, 2),
+        (20, 3, 3),
+        (1, 7, 7),
+        (0, 8, 8),
     ] {
         populate_cache(&gctx, &test_crates);
         // Determine the order things will be deleted.
@@ -1153,20 +1162,22 @@ fn max_download_size() {
         for name in removed {
             writeln!(stderr, "[REMOVING] [..]{name}").unwrap();
         }
-        let files_display = if files_deleted == 1 {
-            format!("1 file")
+        let files_display = if files_deleted == 0 {
+            "0 files"
+        } else if files_deleted == 1 {
+            "1 file"
         } else {
-            format!("{files_deleted} files")
+            "[FILE_NUM] files"
         };
         let total_display = if removed.is_empty() {
-            String::new()
+            ""
         } else {
-            format!(", {bytes}B total")
+            ", [FILE_SIZE]B total"
         };
-        write!(stderr, "[REMOVED] {files_display}{total_display}",).unwrap();
+        writeln!(stderr, "[REMOVED] {files_display}{total_display}",).unwrap();
         cargo_process(&format!("clean gc -Zgc -v --max-download-size={max_size}"))
             .masquerade_as_nightly_cargo(&["gc"])
-            .with_stderr_unordered(&stderr)
+            .with_stderr_data(stderr.unordered())
             .run();
     }
 }
@@ -1251,7 +1262,7 @@ fn package_cache_lock_during_build() {
         .env("CARGO_LOG", "gc=debug")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
    [..]s DEBUG gc: unable to acquire mutate lock, auto gc disabled
 [CHECKING] bar v1.0.0
 [CHECKING] foo2 v0.1.0 ([ROOT]/foo2)
@@ -1363,7 +1374,6 @@ fn delete_index_also_deletes_crates() {
     assert_eq!(get_registry_names("cache").len(), 0);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn clean_syncs_missing_files() {
     // When files go missing in the cache, clean operations that need to track
@@ -1417,7 +1427,10 @@ fn clean_syncs_missing_files() {
     // Clean should update the db.
     p.cargo("clean gc -v --max-download-size=1GB -Zgc")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr("[REMOVED] 0 files")
+        .with_stderr_data(str![[r#"
+[REMOVED] 0 files
+
+"#]])
         .run();
 
     // Verify
@@ -1460,7 +1473,6 @@ fn offline_doesnt_auto_gc() {
     assert_eq!(get_registry_names("cache"), &[] as &[String]);
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn can_handle_future_schema() -> anyhow::Result<()> {
     // It should work when a future version of cargo has made schema changes
@@ -1484,7 +1496,10 @@ fn can_handle_future_schema() -> anyhow::Result<()> {
     // Verify it doesn't blow up.
     p.cargo("clean gc --max-download-size=0 -Zgc")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr("[REMOVED] 4 files, [..] total")
+        .with_stderr_data(str![[r#"
+[REMOVED] [FILE_NUM] files, [FILE_SIZE]B total
+
+"#]])
         .run();
     Ok(())
 }
@@ -1673,7 +1688,6 @@ fn clean_max_src_crate_age() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn clean_max_git_size() {
     // clean --max-git-size
@@ -1746,9 +1760,9 @@ fn clean_max_git_size() {
 
     p.cargo(&format!("clean gc --max-git-size={threshold} -Zgc -v"))
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr(&format!(
+        .with_stderr_data(&format!(
             "\
-[REMOVING] [ROOT]/home/.cargo/git/checkouts/{db_name}/{first_co_name}
+[REMOVING] [ROOT]/home/.cargo/git/checkouts/bar-[HASH]/{first_co_name}
 [REMOVED] [..]
 "
         ))
@@ -1757,13 +1771,16 @@ fn clean_max_git_size() {
     // And then try cleaning everything.
     p.cargo("clean gc --max-git-size=0 -Zgc -v")
         .masquerade_as_nightly_cargo(&["gc"])
-        .with_stderr_unordered(&format!(
-            "\
-[REMOVING] [ROOT]/home/.cargo/git/checkouts/{db_name}/{second_co_name}
-[REMOVING] [ROOT]/home/.cargo/git/db/{db_name}
+        .with_stderr_data(
+            format!(
+                "\
+[REMOVING] [ROOT]/home/.cargo/git/checkouts/bar-[HASH]/{second_co_name}
+[REMOVING] [ROOT]/home/.cargo/git/db/bar-[HASH]
 [REMOVED] [..]
 "
-        ))
+            )
+            .unordered(),
+        )
         .run();
 }
 

@@ -1,4 +1,7 @@
+use std::fs;
+
 use cargo_test_support::basic_manifest;
+use cargo_test_support::paths::cargo_home;
 use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
@@ -63,28 +66,6 @@ args: []
 [COMPILING] echo v0.0.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `[ROOT]/home/.cargo/target/[HASH]/debug/echo[EXE]`
-
-"#]])
-        .run();
-}
-
-#[cargo_test]
-fn basic_cargo_toml() {
-    let p = cargo_test_support::project()
-        .file("src/main.rs", ECHO_SCRIPT)
-        .build();
-
-    p.cargo("-Zscript -v Cargo.toml")
-        .masquerade_as_nightly_cargo(&["script"])
-        .with_stdout_data(str![[r#"
-bin: target/debug/foo[EXE]
-args: []
-
-"#]])
-        .with_stderr_data(str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-[RUNNING] `target/debug/foo[EXE]`
 
 "#]])
         .run();
@@ -322,7 +303,7 @@ msg = hello
 }
 
 #[cargo_test]
-fn use_script_config() {
+fn use_cargo_home_config() {
     let script = ECHO_SCRIPT;
     let _ = cargo_test_support::project()
         .at("script")
@@ -340,7 +321,38 @@ rustc = "non-existent-rustc"
         .file("script.rs", script)
         .build();
 
-    // Verify the config is bad
+    // Verify that the config from the current directory is used
+    p.cargo("-Zscript script.rs -NotAnArg")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![[r#"
+bin: [ROOT]/home/.cargo/target/[HASH]/debug/script[EXE]
+args: ["-NotAnArg"]
+
+"#]])
+        .run();
+
+    // Verify that the config from the parent directory is not used
+    p.cargo("-Zscript ../script/script.rs -NotAnArg")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![[r#"
+bin: [ROOT]/home/.cargo/target/[HASH]/debug/script[EXE]
+args: ["-NotAnArg"]
+
+"#]])
+        .run();
+
+    // Write a global config.toml in the cargo home directory
+    let cargo_home = cargo_home();
+    fs::write(
+        &cargo_home.join("config.toml"),
+        r#"
+[build]
+rustc = "non-existent-rustc"
+"#,
+    )
+    .unwrap();
+
+    // Verify the global config is used
     p.cargo("-Zscript script.rs -NotAnArg")
         .masquerade_as_nightly_cargo(&["script"])
         .with_status(101)
@@ -349,16 +361,6 @@ rustc = "non-existent-rustc"
 
 Caused by:
   [NOT_FOUND]
-
-"#]])
-        .run();
-
-    // Verify that the config isn't used
-    p.cargo("-Zscript ../script/script.rs -NotAnArg")
-        .masquerade_as_nightly_cargo(&["script"])
-        .with_stdout_data(str![[r#"
-bin: [ROOT]/home/.cargo/target/[HASH]/debug/script[EXE]
-args: ["-NotAnArg"]
 
 "#]])
         .run();
@@ -709,7 +711,7 @@ Hello world!
         .with_stderr_data(str![[r#"
 [WARNING] `package.edition` is unspecified, defaulting to `2021`
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] script v1.0.0 (registry `dummy-registry`)
 [COMPILING] script v1.0.0
@@ -747,7 +749,7 @@ Hello world!
 "#]])
         .with_stderr_data(str![[r#"
 [WARNING] `package.edition` is unspecified, defaulting to `2021`
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [COMPILING] script v0.0.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -795,6 +797,34 @@ fn main() {
     let p = cargo_test_support::project()
         .file("script.rs", script)
         .file("src/bin/not-script/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("-Zscript -v script.rs --help")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![[r#"
+Hello world!
+
+"#]])
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to `2021`
+[COMPILING] script v0.0.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `[ROOT]/home/.cargo/target/[HASH]/debug/script[EXE] --help`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn test_no_autolib() {
+    let script = r#"#!/usr/bin/env cargo
+
+fn main() {
+    println!("Hello world!");
+}"#;
+    let p = cargo_test_support::project()
+        .file("script.rs", script)
+        .file("src/lib.rs", r#"compile_error!{"must not be built"}"#)
         .build();
 
     p.cargo("-Zscript -v script.rs --help")
@@ -1313,6 +1343,36 @@ fn cmd_publish_with_embedded() {
         .with_stderr_data(str![[r#"
 [WARNING] `package.edition` is unspecified, defaulting to `2021`
 [ERROR] [ROOT]/foo/script.rs is unsupported by `cargo publish`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn manifest_path_env() {
+    let p = cargo_test_support::project()
+        .file(
+            "script.rs",
+            r#"#!/usr/bin/env cargo
+
+fn main() {
+    let path = env!("CARGO_MANIFEST_PATH");
+    println!("CARGO_MANIFEST_PATH: {}", path);
+}
+"#,
+        )
+        .build();
+    p.cargo("-Zscript -v script.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![[r#"
+CARGO_MANIFEST_PATH: [ROOT]/foo/script.rs
+
+"#]])
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to `2021`
+[COMPILING] script v0.0.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `[ROOT]/home/.cargo/target/[HASH]/debug/script[EXE]`
 
 "#]])
         .run();

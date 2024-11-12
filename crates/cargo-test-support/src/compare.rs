@@ -3,7 +3,7 @@
 //! # Deprecated comparisons
 //!
 //! Cargo's tests are in transition from internal-only pattern and normalization routines used in
-//! asserts like [`crate::Execs::with_stdout`] to [`assert_e2e`] and [`assert_ui`].
+//! asserts like [`crate::Execs::with_stdout_contains`] to [`assert_e2e`] and [`assert_ui`].
 //!
 //! ## Patterns
 //!
@@ -43,13 +43,14 @@
 
 use crate::cross_compile::try_alternate;
 use crate::paths;
-use crate::{diff, rustc_host};
-use anyhow::{bail, Context, Result};
-use serde_json::Value;
+use crate::rustc_host;
+use anyhow::{bail, Result};
+use snapbox::Data;
+use snapbox::IntoData;
 use std::fmt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::str;
-use url::Url;
 
 /// This makes it easier to write regex replacements that are guaranteed to only
 /// get compiled once
@@ -208,7 +209,7 @@ fn add_regex_redactions(subs: &mut snapbox::Redactions) {
     .unwrap();
     subs.insert(
         "[FILE_NUM]",
-        regex!(r"\[(REMOVED|SUMMARY)\] (?<redacted>[0-9]+) files"),
+        regex!(r"\[(REMOVED|SUMMARY)\] (?<redacted>[1-9][0-9]*) files"),
     )
     .unwrap();
     subs.insert(
@@ -330,209 +331,24 @@ static E2E_LITERAL_REDACTIONS: &[(&str, &str)] = &[
     ("[OPENING]", "     Opening"),
 ];
 
-/// Normalizes the output so that it can be compared against the expected value.
-fn normalize_actual(actual: &str, cwd: Option<&Path>) -> String {
-    // It's easier to read tabs in outputs if they don't show up as literal
-    // hidden characters
-    let actual = actual.replace('\t', "<tab>");
-    if cfg!(windows) {
-        // Let's not deal with \r\n vs \n on windows...
-        let actual = actual.replace('\r', "");
-        normalize_windows(&actual, cwd)
-    } else {
-        actual
-    }
-}
-
-/// Normalizes the expected string so that it can be compared against the actual output.
-fn normalize_expected(expected: &str, cwd: Option<&Path>) -> String {
-    let expected = replace_dirty_msvc(expected);
-    let expected = substitute_macros(&expected);
-
-    if cfg!(windows) {
-        normalize_windows(&expected, cwd)
-    } else {
-        let expected = match cwd {
-            None => expected,
-            Some(cwd) => expected.replace("[CWD]", &cwd.display().to_string()),
-        };
-        let expected = expected.replace("[ROOT]", &paths::root().display().to_string());
-        expected
-    }
-}
-
-fn replace_dirty_msvc_impl(s: &str, is_msvc: bool) -> String {
-    if is_msvc {
-        s.replace("[DIRTY-MSVC]", "[DIRTY]")
-    } else {
-        use itertools::Itertools;
-
-        let mut new = s
-            .lines()
-            .filter(|it| !it.starts_with("[DIRTY-MSVC]"))
-            .join("\n");
-
-        if s.ends_with("\n") {
-            new.push_str("\n");
-        }
-
-        new
-    }
-}
-
-fn replace_dirty_msvc(s: &str) -> String {
-    replace_dirty_msvc_impl(s, cfg!(target_env = "msvc"))
-}
-
-/// Normalizes text for both actual and expected strings on Windows.
-fn normalize_windows(text: &str, cwd: Option<&Path>) -> String {
-    // Let's not deal with / vs \ (windows...)
-    let text = text.replace('\\', "/");
-
-    // Weirdness for paths on Windows extends beyond `/` vs `\` apparently.
-    // Namely paths like `c:\` and `C:\` are equivalent and that can cause
-    // issues. The return value of `env::current_dir()` may return a
-    // lowercase drive name, but we round-trip a lot of values through `Url`
-    // which will auto-uppercase the drive name. To just ignore this
-    // distinction we try to canonicalize as much as possible, taking all
-    // forms of a path and canonicalizing them to one.
-    let replace_path = |s: &str, path: &Path, with: &str| {
-        let path_through_url = Url::from_file_path(path).unwrap().to_file_path().unwrap();
-        let path1 = path.display().to_string().replace('\\', "/");
-        let path2 = path_through_url.display().to_string().replace('\\', "/");
-        s.replace(&path1, with)
-            .replace(&path2, with)
-            .replace(with, &path1)
-    };
-
-    let text = match cwd {
-        None => text,
-        Some(p) => replace_path(&text, p, "[CWD]"),
-    };
-
-    // Similar to cwd above, perform similar treatment to the root path
-    // which in theory all of our paths should otherwise get rooted at.
-    let root = paths::root();
-    let text = replace_path(&text, &root, "[ROOT]");
-
-    text
-}
-
-fn substitute_macros(input: &str) -> String {
-    let mut result = input.to_owned();
-    for &(pat, subst) in MIN_LITERAL_REDACTIONS {
-        result = result.replace(pat, subst)
-    }
-    for &(pat, subst) in E2E_LITERAL_REDACTIONS {
-        result = result.replace(pat, subst)
-    }
-    result
-}
-
-/// Compares one string against another, checking that they both match.
-///
-/// See [Patterns](index.html#patterns) for more information on pattern matching.
-///
-/// - `description` explains where the output is from (usually "stdout" or "stderr").
-/// - `other_output` is other output to display in the error (usually stdout or stderr).
-pub(crate) fn match_exact(
-    expected: &str,
-    actual: &str,
-    description: &str,
-    other_output: &str,
-    cwd: Option<&Path>,
-) -> Result<()> {
-    let expected = normalize_expected(expected, cwd);
-    let actual = normalize_actual(actual, cwd);
-    let e: Vec<_> = expected.lines().map(WildStr::new).collect();
-    let a: Vec<_> = actual.lines().map(WildStr::new).collect();
-    if e == a {
-        return Ok(());
-    }
-    let diff = diff::colored_diff(&e, &a);
-    bail!(
-        "{} did not match:\n\
-         {}\n\n\
-         other output:\n\
-         {}\n",
-        description,
-        diff,
-        other_output,
-    );
-}
-
-/// Convenience wrapper around [`match_exact`] which will panic on error.
-#[track_caller]
-pub(crate) fn assert_match_exact(expected: &str, actual: &str) {
-    if let Err(e) = match_exact(expected, actual, "", "", None) {
-        crate::panic_error("", e);
-    }
-}
-
-/// Checks that the given string contains the given lines, ignoring the order
-/// of the lines.
-///
-/// See [Patterns](index.html#patterns) for more information on pattern matching.
-pub(crate) fn match_unordered(expected: &str, actual: &str, cwd: Option<&Path>) -> Result<()> {
-    let expected = normalize_expected(expected, cwd);
-    let actual = normalize_actual(actual, cwd);
-    let e: Vec<_> = expected.lines().map(|line| WildStr::new(line)).collect();
-    let mut a: Vec<_> = actual.lines().map(|line| WildStr::new(line)).collect();
-    // match more-constrained lines first, although in theory we'll
-    // need some sort of recursive match here. This handles the case
-    // that you expect "a\n[..]b" and two lines are printed out,
-    // "ab\n"a", where technically we do match unordered but a naive
-    // search fails to find this. This simple sort at least gets the
-    // test suite to pass for now, but we may need to get more fancy
-    // if tests start failing again.
-    a.sort_by_key(|s| s.line.len());
-    let mut changes = Vec::new();
-    let mut a_index = 0;
-    let mut failure = false;
-
-    use crate::diff::Change;
-    for (e_i, e_line) in e.into_iter().enumerate() {
-        match a.iter().position(|a_line| e_line == *a_line) {
-            Some(index) => {
-                let a_line = a.remove(index);
-                changes.push(Change::Keep(e_i, index, a_line));
-                a_index += 1;
-            }
-            None => {
-                failure = true;
-                changes.push(Change::Remove(e_i, e_line));
-            }
-        }
-    }
-    for unmatched in a {
-        failure = true;
-        changes.push(Change::Add(a_index, unmatched));
-        a_index += 1;
-    }
-    if failure {
-        bail!(
-            "Expected lines did not match (ignoring order):\n{}\n",
-            diff::render_colored_changes(&changes)
-        );
-    } else {
-        Ok(())
-    }
-}
-
 /// Checks that the given string contains the given contiguous lines
 /// somewhere.
 ///
 /// See [Patterns](index.html#patterns) for more information on pattern matching.
-pub(crate) fn match_contains(expected: &str, actual: &str, cwd: Option<&Path>) -> Result<()> {
-    let expected = normalize_expected(expected, cwd);
-    let actual = normalize_actual(actual, cwd);
+pub(crate) fn match_contains(
+    expected: &str,
+    actual: &str,
+    redactions: &snapbox::Redactions,
+) -> Result<()> {
+    let expected = normalize_expected(expected, redactions);
+    let actual = normalize_actual(actual, redactions);
     let e: Vec<_> = expected.lines().map(|line| WildStr::new(line)).collect();
-    let a: Vec<_> = actual.lines().map(|line| WildStr::new(line)).collect();
+    let a: Vec<_> = actual.lines().collect();
     if e.len() == 0 {
         bail!("expected length must not be zero");
     }
     for window in a.windows(e.len()) {
-        if window == e {
+        if e == window {
             return Ok(());
         }
     }
@@ -553,9 +369,9 @@ pub(crate) fn match_contains(expected: &str, actual: &str, cwd: Option<&Path>) -
 pub(crate) fn match_does_not_contain(
     expected: &str,
     actual: &str,
-    cwd: Option<&Path>,
+    redactions: &snapbox::Redactions,
 ) -> Result<()> {
-    if match_contains(expected, actual, cwd).is_ok() {
+    if match_contains(expected, actual, redactions).is_ok() {
         bail!(
             "expected not to find:\n\
              {}\n\n\
@@ -566,40 +382,6 @@ pub(crate) fn match_does_not_contain(
         );
     } else {
         Ok(())
-    }
-}
-
-/// Checks that the given string contains the given contiguous lines
-/// somewhere, and should be repeated `number` times.
-///
-/// See [Patterns](index.html#patterns) for more information on pattern matching.
-pub(crate) fn match_contains_n(
-    expected: &str,
-    number: usize,
-    actual: &str,
-    cwd: Option<&Path>,
-) -> Result<()> {
-    let expected = normalize_expected(expected, cwd);
-    let actual = normalize_actual(actual, cwd);
-    let e: Vec<_> = expected.lines().map(|line| WildStr::new(line)).collect();
-    let a: Vec<_> = actual.lines().map(|line| WildStr::new(line)).collect();
-    if e.len() == 0 {
-        bail!("expected length must not be zero");
-    }
-    let matches = a.windows(e.len()).filter(|window| *window == e).count();
-    if matches == number {
-        Ok(())
-    } else {
-        bail!(
-            "expected to find {} occurrences of:\n\
-             {}\n\n\
-             but found {} matches in the output:\n\
-             {}",
-            number,
-            expected,
-            matches,
-            actual
-        )
     }
 }
 
@@ -614,10 +396,10 @@ pub(crate) fn match_with_without(
     actual: &str,
     with: &[String],
     without: &[String],
-    cwd: Option<&Path>,
+    redactions: &snapbox::Redactions,
 ) -> Result<()> {
-    let actual = normalize_actual(actual, cwd);
-    let norm = |s: &String| format!("[..]{}[..]", normalize_expected(s, cwd));
+    let actual = normalize_actual(actual, redactions);
+    let norm = |s: &String| format!("[..]{}[..]", normalize_expected(s, redactions));
     let with: Vec<_> = with.iter().map(norm).collect();
     let without: Vec<_> = without.iter().map(norm).collect();
     let with_wild: Vec<_> = with.iter().map(|w| WildStr::new(w)).collect();
@@ -625,7 +407,6 @@ pub(crate) fn match_with_without(
 
     let matches: Vec<_> = actual
         .lines()
-        .map(WildStr::new)
         .filter(|line| with_wild.iter().all(|with| with == line))
         .filter(|line| !without_wild.iter().any(|without| without == line))
         .collect();
@@ -654,167 +435,35 @@ pub(crate) fn match_with_without(
     }
 }
 
-/// Checks that the given string of JSON objects match the given set of
-/// expected JSON objects.
-///
-/// See [`crate::Execs::with_json`] for more details.
-pub(crate) fn match_json(expected: &str, actual: &str, cwd: Option<&Path>) -> Result<()> {
-    let (exp_objs, act_objs) = collect_json_objects(expected, actual)?;
-    if exp_objs.len() != act_objs.len() {
-        bail!(
-            "expected {} json lines, got {}, stdout:\n{}",
-            exp_objs.len(),
-            act_objs.len(),
-            actual
-        );
-    }
-    for (exp_obj, act_obj) in exp_objs.iter().zip(act_objs) {
-        find_json_mismatch(exp_obj, &act_obj, cwd)?;
-    }
-    Ok(())
+/// Normalizes the output so that it can be compared against the expected value.
+fn normalize_actual(content: &str, redactions: &snapbox::Redactions) -> String {
+    use snapbox::filter::Filter as _;
+    let content = snapbox::filter::FilterPaths.filter(content.into_data());
+    let content = snapbox::filter::FilterNewlines.filter(content);
+    let content = content.render().expect("came in as a String");
+    let content = redactions.redact(&content);
+    content
 }
 
-/// Checks that the given string of JSON objects match the given set of
-/// expected JSON objects, ignoring their order.
-///
-/// See [`crate::Execs::with_json_contains_unordered`] for more details and
-/// cautions when using.
-pub(crate) fn match_json_contains_unordered(
-    expected: &str,
-    actual: &str,
-    cwd: Option<&Path>,
-) -> Result<()> {
-    let (exp_objs, mut act_objs) = collect_json_objects(expected, actual)?;
-    for exp_obj in exp_objs {
-        match act_objs
-            .iter()
-            .position(|act_obj| find_json_mismatch(&exp_obj, act_obj, cwd).is_ok())
-        {
-            Some(index) => act_objs.remove(index),
-            None => {
-                bail!(
-                    "Did not find expected JSON:\n\
-                     {}\n\
-                     Remaining available output:\n\
-                     {}\n",
-                    serde_json::to_string_pretty(&exp_obj).unwrap(),
-                    itertools::join(
-                        act_objs.iter().map(|o| serde_json::to_string(o).unwrap()),
-                        "\n"
-                    )
-                );
-            }
-        };
-    }
-    Ok(())
-}
-
-fn collect_json_objects(
-    expected: &str,
-    actual: &str,
-) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
-    let expected_objs: Vec<_> = expected
-        .split("\n\n")
-        .map(|expect| {
-            expect
-                .parse()
-                .with_context(|| format!("failed to parse expected JSON object:\n{}", expect))
-        })
-        .collect::<Result<_>>()?;
-    let actual_objs: Vec<_> = actual
-        .lines()
-        .filter(|line| line.starts_with('{'))
-        .map(|line| {
-            line.parse()
-                .with_context(|| format!("failed to parse JSON object:\n{}", line))
-        })
-        .collect::<Result<_>>()?;
-    Ok((expected_objs, actual_objs))
-}
-
-/// Compares JSON object for approximate equality.
-/// You can use `[..]` wildcard in strings (useful for OS-dependent things such
-/// as paths). You can use a `"{...}"` string literal as a wildcard for
-/// arbitrary nested JSON (useful for parts of object emitted by other programs
-/// (e.g., rustc) rather than Cargo itself).
-pub(crate) fn find_json_mismatch(
-    expected: &Value,
-    actual: &Value,
-    cwd: Option<&Path>,
-) -> Result<()> {
-    match find_json_mismatch_r(expected, actual, cwd) {
-        Some((expected_part, actual_part)) => bail!(
-            "JSON mismatch\nExpected:\n{}\nWas:\n{}\nExpected part:\n{}\nActual part:\n{}\n",
-            serde_json::to_string_pretty(expected).unwrap(),
-            serde_json::to_string_pretty(&actual).unwrap(),
-            serde_json::to_string_pretty(expected_part).unwrap(),
-            serde_json::to_string_pretty(actual_part).unwrap(),
-        ),
-        None => Ok(()),
-    }
-}
-
-fn find_json_mismatch_r<'a>(
-    expected: &'a Value,
-    actual: &'a Value,
-    cwd: Option<&Path>,
-) -> Option<(&'a Value, &'a Value)> {
-    use serde_json::Value::*;
-    match (expected, actual) {
-        (&Number(ref l), &Number(ref r)) if l == r => None,
-        (&Bool(l), &Bool(r)) if l == r => None,
-        (&String(ref l), _) if l == "{...}" => None,
-        (&String(ref l), &String(ref r)) => {
-            if match_exact(l, r, "", "", cwd).is_err() {
-                Some((expected, actual))
-            } else {
-                None
-            }
-        }
-        (&Array(ref l), &Array(ref r)) => {
-            if l.len() != r.len() {
-                return Some((expected, actual));
-            }
-
-            l.iter()
-                .zip(r.iter())
-                .filter_map(|(l, r)| find_json_mismatch_r(l, r, cwd))
-                .next()
-        }
-        (&Object(ref l), &Object(ref r)) => {
-            let mut expected_entries = l.iter();
-            let mut actual_entries = r.iter();
-
-            loop {
-                match (expected_entries.next(), actual_entries.next()) {
-                    (None, None) => return None,
-                    (Some((expected_key, expected_value)), Some((actual_key, actual_value)))
-                        if expected_key == actual_key =>
-                    {
-                        if let mismatch @ Some(_) =
-                            find_json_mismatch_r(expected_value, actual_value, cwd)
-                        {
-                            return mismatch;
-                        }
-                    }
-                    _ => return Some((expected, actual)),
-                }
-            }
-        }
-        (&Null, &Null) => None,
-        // Magic string literal `"{...}"` acts as wildcard for any sub-JSON.
-        _ => Some((expected, actual)),
-    }
+/// Normalizes the expected string so that it can be compared against the actual output.
+fn normalize_expected(content: &str, redactions: &snapbox::Redactions) -> String {
+    use snapbox::filter::Filter as _;
+    let content = snapbox::filter::FilterPaths.filter(content.into_data());
+    let content = snapbox::filter::FilterNewlines.filter(content);
+    // Remove any conditionally absent redactions like `[EXE]`
+    let content = content.render().expect("came in as a String");
+    let content = redactions.clear_unused(&content);
+    content.into_owned()
 }
 
 /// A single line string that supports `[..]` wildcard matching.
-pub(crate) struct WildStr<'a> {
+struct WildStr<'a> {
     has_meta: bool,
     line: &'a str,
 }
 
 impl<'a> WildStr<'a> {
-    pub fn new(line: &'a str) -> WildStr<'a> {
+    fn new(line: &'a str) -> WildStr<'a> {
         WildStr {
             has_meta: line.contains("[..]"),
             line,
@@ -822,13 +471,12 @@ impl<'a> WildStr<'a> {
     }
 }
 
-impl<'a> PartialEq for WildStr<'a> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self.has_meta, other.has_meta) {
-            (false, false) => self.line == other.line,
-            (true, false) => meta_cmp(self.line, other.line),
-            (false, true) => meta_cmp(other.line, self.line),
-            (true, true) => panic!("both lines cannot have [..]"),
+impl PartialEq<&str> for WildStr<'_> {
+    fn eq(&self, other: &&str) -> bool {
+        if self.has_meta {
+            meta_cmp(self.line, other)
+        } else {
+            self.line == *other
         }
     }
 }
@@ -860,6 +508,145 @@ impl fmt::Debug for WildStr<'_> {
     }
 }
 
+pub struct InMemoryDir {
+    files: Vec<(PathBuf, Data)>,
+}
+
+impl InMemoryDir {
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().map(|(p, _)| p.as_path())
+    }
+
+    #[track_caller]
+    pub fn assert_contains(&self, expected: &Self) {
+        use std::fmt::Write as _;
+        let assert = assert_e2e();
+        let mut errs = String::new();
+        for (path, expected_data) in &expected.files {
+            let actual_data = self
+                .files
+                .iter()
+                .find_map(|(p, d)| (path == p).then(|| d.clone()))
+                .unwrap_or_else(|| Data::new());
+            if let Err(err) =
+                assert.try_eq(Some(&path.display()), actual_data, expected_data.clone())
+            {
+                let _ = write!(&mut errs, "{err}");
+            }
+        }
+        if !errs.is_empty() {
+            panic!("{errs}")
+        }
+    }
+}
+
+impl<P, D> FromIterator<(P, D)> for InMemoryDir
+where
+    P: Into<std::path::PathBuf>,
+    D: IntoData,
+{
+    fn from_iter<I: IntoIterator<Item = (P, D)>>(files: I) -> Self {
+        let files = files
+            .into_iter()
+            .map(|(p, d)| (p.into(), d.into_data()))
+            .collect();
+        Self { files }
+    }
+}
+
+impl<const N: usize, P, D> From<[(P, D); N]> for InMemoryDir
+where
+    P: Into<PathBuf>,
+    D: IntoData,
+{
+    fn from(files: [(P, D); N]) -> Self {
+        let files = files
+            .into_iter()
+            .map(|(p, d)| (p.into(), d.into_data()))
+            .collect();
+        Self { files }
+    }
+}
+
+impl<P, D> From<std::collections::HashMap<P, D>> for InMemoryDir
+where
+    P: Into<PathBuf>,
+    D: IntoData,
+{
+    fn from(files: std::collections::HashMap<P, D>) -> Self {
+        let files = files
+            .into_iter()
+            .map(|(p, d)| (p.into(), d.into_data()))
+            .collect();
+        Self { files }
+    }
+}
+
+impl<P, D> From<std::collections::BTreeMap<P, D>> for InMemoryDir
+where
+    P: Into<PathBuf>,
+    D: IntoData,
+{
+    fn from(files: std::collections::BTreeMap<P, D>) -> Self {
+        let files = files
+            .into_iter()
+            .map(|(p, d)| (p.into(), d.into_data()))
+            .collect();
+        Self { files }
+    }
+}
+
+impl From<()> for InMemoryDir {
+    fn from(_files: ()) -> Self {
+        let files = Vec::new();
+        Self { files }
+    }
+}
+
+/// Create an `impl _ for InMemoryDir` for a generic tuple
+///
+/// Must pass in names for each tuple parameter for
+/// - internal variable name
+/// - `Path` type
+/// - `Data` type
+macro_rules! impl_from_tuple_for_inmemorydir {
+    ($($var:ident $path:ident $data:ident),+) => {
+        impl<$($path: Into<PathBuf>, $data: IntoData),+> From<($(($path, $data)),+ ,)> for InMemoryDir {
+            fn from(files: ($(($path, $data)),+,)) -> Self {
+                let ($($var),+ ,) = files;
+                let files = [$(($var.0.into(), $var.1.into_data())),+];
+                files.into()
+            }
+        }
+    };
+}
+
+/// Extend `impl_from_tuple_for_inmemorydir`` to generate for the specified tuple and all smaller
+/// tuples
+macro_rules! impl_from_tuples_for_inmemorydir {
+    ($var1:ident $path1:ident $data1:ident, $($var:ident $path:ident $data:ident),+) => {
+        impl_from_tuples_for_inmemorydir!(__impl $var1 $path1 $data1; $($var $path $data),+);
+    };
+    (__impl $($var:ident $path:ident $data:ident),+; $var1:ident $path1:ident $data1:ident $(,$var2:ident $path2:ident $data2:ident)*) => {
+        impl_from_tuple_for_inmemorydir!($($var $path $data),+);
+        impl_from_tuples_for_inmemorydir!(__impl $($var $path $data),+, $var1 $path1 $data1; $($var2 $path2 $data2),*);
+    };
+    (__impl $($var:ident $path:ident $data:ident),+;) => {
+        impl_from_tuple_for_inmemorydir!($($var $path $data),+);
+    }
+}
+
+// Generate for tuples of size `1..=7`
+impl_from_tuples_for_inmemorydir!(
+    s1 P1 D1,
+    s2 P2 D2,
+    s3 P3 D3,
+    s4 P4 D4,
+    s5 P5 D5,
+    s6 P6 D6,
+    s7 P7 D7
+);
+
 #[cfg(test)]
 mod test {
     use snapbox::assert_data_eq;
@@ -877,122 +664,11 @@ mod test {
             ("[..]", "a b"),
             ("[..]b", "a b"),
         ] {
-            assert_eq!(WildStr::new(a), WildStr::new(b));
+            assert_eq!(WildStr::new(a), b);
         }
         for (a, b) in &[("[..]b", "c"), ("b", "c"), ("b", "cb")] {
-            assert_ne!(WildStr::new(a), WildStr::new(b));
+            assert_ne!(WildStr::new(a), b);
         }
-    }
-
-    #[test]
-    fn dirty_msvc() {
-        let case = |expected: &str, wild: &str, msvc: bool| {
-            assert_eq!(expected, &replace_dirty_msvc_impl(wild, msvc));
-        };
-
-        // no replacements
-        case("aa", "aa", false);
-        case("aa", "aa", true);
-
-        // with replacements
-        case(
-            "\
-[DIRTY] a",
-            "\
-[DIRTY-MSVC] a",
-            true,
-        );
-        case(
-            "",
-            "\
-[DIRTY-MSVC] a",
-            false,
-        );
-        case(
-            "\
-[DIRTY] a
-[COMPILING] a",
-            "\
-[DIRTY-MSVC] a
-[COMPILING] a",
-            true,
-        );
-        case(
-            "\
-[COMPILING] a",
-            "\
-[DIRTY-MSVC] a
-[COMPILING] a",
-            false,
-        );
-
-        // test trailing newline behavior
-        case(
-            "\
-A
-B
-", "\
-A
-B
-", true,
-        );
-
-        case(
-            "\
-A
-B
-", "\
-A
-B
-", false,
-        );
-
-        case(
-            "\
-A
-B", "\
-A
-B", true,
-        );
-
-        case(
-            "\
-A
-B", "\
-A
-B", false,
-        );
-
-        case(
-            "\
-[DIRTY] a
-",
-            "\
-[DIRTY-MSVC] a
-",
-            true,
-        );
-        case(
-            "\n",
-            "\
-[DIRTY-MSVC] a
-",
-            false,
-        );
-
-        case(
-            "\
-[DIRTY] a",
-            "\
-[DIRTY-MSVC] a",
-            true,
-        );
-        case(
-            "",
-            "\
-[DIRTY-MSVC] a",
-            false,
-        );
     }
 
     #[test]

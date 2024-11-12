@@ -63,7 +63,7 @@ use std::io::SeekFrom;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::Instant;
 
 use self::ConfigValue as CV;
@@ -227,7 +227,7 @@ pub struct GlobalContext {
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
     doc_extern_map: LazyCell<RustdocExternMap>,
     progress_config: ProgressConfig,
-    env_config: LazyCell<EnvConfig>,
+    env_config: LazyCell<Arc<HashMap<String, OsString>>>,
     /// This should be false if:
     /// - this is an artifact of the rustc distribution process for "stable" or for "beta"
     /// - this is an `#[test]` that does not opt in with `enable_nightly_features`
@@ -335,8 +335,8 @@ impl GlobalContext {
     /// any config files from disk. Those will be loaded lazily as-needed.
     pub fn default() -> CargoResult<GlobalContext> {
         let shell = Shell::new();
-        let cwd = env::current_dir()
-            .with_context(|| "couldn't get the current directory of the process")?;
+        let cwd =
+            env::current_dir().context("couldn't get the current directory of the process")?;
         let homedir = homedir(&cwd).ok_or_else(|| {
             anyhow!(
                 "Cargo couldn't find your home directory. \
@@ -496,7 +496,7 @@ impl GlobalContext {
                 let exe = from_env()
                     .or_else(|_| from_current_exe())
                     .or_else(|_| from_argv())
-                    .with_context(|| "couldn't get the path to cargo executable")?;
+                    .context("couldn't get the path to cargo executable")?;
                 Ok(exe)
             })
             .map(AsRef::as_ref)
@@ -569,8 +569,8 @@ impl GlobalContext {
     ///
     /// There is not a need to also call [`Self::reload_rooted_at`].
     pub fn reload_cwd(&mut self) -> CargoResult<()> {
-        let cwd = env::current_dir()
-            .with_context(|| "couldn't get the current directory of the process")?;
+        let cwd =
+            env::current_dir().context("couldn't get the current directory of the process")?;
         let homedir = homedir(&cwd).ok_or_else(|| {
             anyhow!(
                 "Cargo couldn't find your home directory. \
@@ -815,7 +815,7 @@ impl GlobalContext {
     /// [`GlobalContext`].
     ///
     /// This can be used similarly to [`std::env::var`].
-    pub fn get_env(&self, key: impl AsRef<OsStr>) -> CargoResult<String> {
+    pub fn get_env(&self, key: impl AsRef<OsStr>) -> CargoResult<&str> {
         self.env.get_env(key)
     }
 
@@ -823,7 +823,7 @@ impl GlobalContext {
     /// [`GlobalContext`].
     ///
     /// This can be used similarly to [`std::env::var_os`].
-    pub fn get_env_os(&self, key: impl AsRef<OsStr>) -> Option<OsString> {
+    pub fn get_env_os(&self, key: impl AsRef<OsStr>) -> Option<&OsStr> {
         self.env.get_env_os(key)
     }
 
@@ -1142,6 +1142,10 @@ impl GlobalContext {
         self.locked
     }
 
+    pub fn set_locked(&mut self, locked: bool) {
+        self.locked = locked;
+    }
+
     pub fn lock_update_allowed(&self) -> bool {
         !self.frozen && !self.locked
     }
@@ -1166,7 +1170,7 @@ impl GlobalContext {
             result.push(cv);
             Ok(())
         })
-        .with_context(|| "could not load Cargo configuration")?;
+        .context("could not load Cargo configuration")?;
         Ok(result)
     }
 
@@ -1206,7 +1210,7 @@ impl GlobalContext {
             })?;
             Ok(())
         })
-        .with_context(|| "could not load Cargo configuration")?;
+        .context("could not load Cargo configuration")?;
 
         match cfg {
             CV::Table(map, _) => Ok(map),
@@ -1495,7 +1499,7 @@ impl GlobalContext {
             };
             let tmp_table = self
                 .load_includes(tmp_table, &mut HashSet::new(), WhyLoad::Cli)
-                .with_context(|| "failed to load --config include".to_string())?;
+                .context("failed to load --config include".to_string())?;
             loaded_args
                 .merge(tmp_table, true)
                 .with_context(|| format!("failed to merge --config argument `{arg}`"))?;
@@ -1581,20 +1585,21 @@ impl GlobalContext {
     where
         F: FnMut(&Path) -> CargoResult<()>,
     {
-        let mut stash: HashSet<PathBuf> = HashSet::new();
+        let mut seen_dir = HashSet::new();
 
         for current in paths::ancestors(pwd, self.search_stop_path.as_deref()) {
-            if let Some(path) = self.get_file_path(&current.join(".cargo"), "config", true)? {
+            let config_root = current.join(".cargo");
+            if let Some(path) = self.get_file_path(&config_root, "config", true)? {
                 walk(&path)?;
-                stash.insert(path);
             }
+            seen_dir.insert(config_root);
         }
 
         // Once we're done, also be sure to walk the home directory even if it's not
         // in our history to be sure we pick up that standard location for
         // information.
-        if let Some(path) = self.get_file_path(home, "config", true)? {
-            if !stash.contains(&path) {
+        if !seen_dir.contains(home) {
+            if let Some(path) = self.get_file_path(home, "config", true)? {
                 walk(&path)?;
             }
         }
@@ -1828,34 +1833,47 @@ impl GlobalContext {
         &self.progress_config
     }
 
-    pub fn env_config(&self) -> CargoResult<&EnvConfig> {
-        let env_config = self
-            .env_config
-            .try_borrow_with(|| self.get::<EnvConfig>("env"))?;
-
-        // Reasons for disallowing these values:
-        //
-        // - CARGO_HOME: The initial call to cargo does not honor this value
-        //   from the [env] table. Recursive calls to cargo would use the new
-        //   value, possibly behaving differently from the outer cargo.
-        //
-        // - RUSTUP_HOME and RUSTUP_TOOLCHAIN: Under normal usage with rustup,
-        //   this will have no effect because the rustup proxy sets
-        //   RUSTUP_HOME and RUSTUP_TOOLCHAIN, and that would override the
-        //   [env] table. If the outer cargo is executed directly
-        //   circumventing the rustup proxy, then this would affect calls to
-        //   rustc (assuming that is a proxy), which could potentially cause
-        //   problems with cargo and rustc being from different toolchains. We
-        //   consider this to be not a use case we would like to support,
-        //   since it will likely cause problems or lead to confusion.
-        for disallowed in &["CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
-            if env_config.contains_key(*disallowed) {
-                bail!(
-                    "setting the `{disallowed}` environment variable is not supported \
-                    in the `[env]` configuration table"
-                );
-            }
-        }
+    /// Get the env vars from the config `[env]` table which
+    /// are `force = true` or don't exist in the env snapshot [`GlobalContext::get_env`].
+    pub fn env_config(&self) -> CargoResult<&Arc<HashMap<String, OsString>>> {
+        let env_config = self.env_config.try_borrow_with(|| {
+            CargoResult::Ok(Arc::new({
+                let env_config = self.get::<EnvConfig>("env")?;
+                // Reasons for disallowing these values:
+                //
+                // - CARGO_HOME: The initial call to cargo does not honor this value
+                //   from the [env] table. Recursive calls to cargo would use the new
+                //   value, possibly behaving differently from the outer cargo.
+                //
+                // - RUSTUP_HOME and RUSTUP_TOOLCHAIN: Under normal usage with rustup,
+                //   this will have no effect because the rustup proxy sets
+                //   RUSTUP_HOME and RUSTUP_TOOLCHAIN, and that would override the
+                //   [env] table. If the outer cargo is executed directly
+                //   circumventing the rustup proxy, then this would affect calls to
+                //   rustc (assuming that is a proxy), which could potentially cause
+                //   problems with cargo and rustc being from different toolchains. We
+                //   consider this to be not a use case we would like to support,
+                //   since it will likely cause problems or lead to confusion.
+                for disallowed in &["CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
+                    if env_config.contains_key(*disallowed) {
+                        bail!(
+                            "setting the `{disallowed}` environment variable is not supported \
+                            in the `[env]` configuration table"
+                        );
+                    }
+                }
+                env_config
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        if v.is_force() || self.get_env_os(&k).is_none() {
+                            Some((k, v.resolve(self).to_os_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }))
+        })?;
 
         Ok(env_config)
     }
@@ -2003,6 +2021,15 @@ impl GlobalContext {
             Ok::<_, anyhow::Error>(RefCell::new(DeferredGlobalLastUse::new()))
         })?;
         Ok(deferred.borrow_mut())
+    }
+
+    /// Get the global [`WarningHandling`] configuration.
+    pub fn warning_handling(&self) -> CargoResult<WarningHandling> {
+        if self.unstable_flags.warnings {
+            Ok(self.build_config()?.warnings.unwrap_or_default())
+        } else {
+            Ok(WarningHandling::default())
+        }
     }
 }
 
@@ -2615,6 +2642,20 @@ pub struct CargoBuildConfig {
     // deprecated alias for artifact-dir
     pub out_dir: Option<ConfigRelativePath>,
     pub artifact_dir: Option<ConfigRelativePath>,
+    pub warnings: Option<WarningHandling>,
+}
+
+/// Whether warnings should warn, be allowed, or cause an error.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WarningHandling {
+    #[default]
+    /// Output warnings.
+    Warn,
+    /// Allow warnings (do not output them).
+    Allow,
+    /// Error if  warnings are emitted.
+    Deny,
 }
 
 /// Configuration for `build.target`.

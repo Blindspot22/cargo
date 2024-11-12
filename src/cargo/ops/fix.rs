@@ -55,13 +55,12 @@ use crate::core::compiler::CompileKind;
 use crate::core::compiler::RustcTargetData;
 use crate::core::resolver::features::{DiffMap, FeatureOpts, FeatureResolver, FeaturesFor};
 use crate::core::resolver::{HasDevUnits, Resolve, ResolveBehavior};
+use crate::core::PackageIdSpecQuery as _;
 use crate::core::{Edition, MaybePackage, Package, PackageId, Workspace};
-use crate::core::{FeatureValue, PackageIdSpecQuery as _};
 use crate::ops::resolve::WorkspaceResolve;
 use crate::ops::{self, CompileOptions};
 use crate::util::diagnostic_server::{Message, RustfixDiagnosticServer};
 use crate::util::errors::CargoResult;
-use crate::util::interning::InternedString;
 use crate::util::GlobalContext;
 use crate::util::{existing_vcs_repo, LockServer, LockServerClient};
 use crate::{drop_eprint, drop_eprintln};
@@ -97,6 +96,7 @@ pub struct FixOptions {
     pub allow_no_vcs: bool,
     pub allow_staged: bool,
     pub broken_code: bool,
+    pub requested_lockfile_path: Option<PathBuf>,
 }
 
 pub fn fix(
@@ -121,6 +121,7 @@ pub fn fix(
     }
     let mut ws = Workspace::new(&root_manifest, gctx)?;
     ws.set_resolve_honors_rust_version(Some(original_ws.resolve_honors_rust_version()));
+    ws.set_requested_lockfile_path(opts.requested_lockfile_path.clone());
 
     // Spin up our lock server, which our subprocesses will use to synchronize fixes.
     let lock_server = LockServer::new()?;
@@ -285,7 +286,6 @@ fn migrate_manifests(ws: &Workspace<'_>, pkgs: &[&Package]) -> CargoResult<()> {
                 fixes += rename_dep_fields_2024(workspace, "dependencies");
             }
 
-            fixes += add_feature_for_unused_deps(pkg, root, ws.gctx());
             fixes += rename_table(root, "project", "package");
             if let Some(target) = root.get_mut("lib").and_then(|t| t.as_table_like_mut()) {
                 fixes += rename_target_fields_2024(target);
@@ -433,79 +433,6 @@ fn rename_table(parent: &mut dyn toml_edit::TableLike, old: &str, new: &str) -> 
         *new_key.leaf_decor_mut() = old_key.leaf_decor().clone();
     }
     1
-}
-
-fn add_feature_for_unused_deps(
-    pkg: &Package,
-    parent: &mut dyn toml_edit::TableLike,
-    gctx: &GlobalContext,
-) -> usize {
-    let manifest = pkg.manifest();
-
-    let activated_opt_deps = manifest
-        .normalized_toml()
-        .features()
-        .map(|map| {
-            map.values()
-                .flatten()
-                .filter_map(|f| match FeatureValue::new(InternedString::new(f)) {
-                    FeatureValue::Dep { dep_name } => Some(dep_name.as_str()),
-                    _ => None,
-                })
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
-
-    let mut fixes = 0;
-    for dep in manifest.dependencies() {
-        let dep_name_in_toml = dep.name_in_toml();
-        if dep.is_optional() && !activated_opt_deps.contains(dep_name_in_toml.as_str()) {
-            if let Some(features) = parent
-                .entry("features")
-                .or_insert(toml_edit::table())
-                .as_table_like_mut()
-            {
-                let activate_dep = format!("dep:{dep_name_in_toml}");
-                let strong_dep_feature_prefix = format!("{dep_name_in_toml}/");
-                features
-                    .entry(dep_name_in_toml.as_str())
-                    .or_insert_with(|| {
-                        fixes += 1;
-                        toml_edit::Item::Value(toml_edit::Value::Array(
-                            toml_edit::Array::from_iter([&activate_dep]),
-                        ))
-                    });
-                // Ensure `dep:dep_name` is present for `dep_name/feature_name` since `dep:` is the
-                // only way to guarantee an optional dependency is available for use.
-                //
-                // The way we avoid implicitly creating features in Edition2024 is we remove the
-                // dependency from `normalized_toml` if there is no `dep:` syntax as that is the only
-                // syntax that suppresses the creation of the implicit feature.
-                for (feature_name, activations) in features.iter_mut() {
-                    let Some(activations) = activations.as_array_mut() else {
-                        let _ = gctx.shell().warn(format_args!("skipping fix of feature `{feature_name}` in package `{}`: unsupported feature schema", pkg.name()));
-                        continue;
-                    };
-                    if activations
-                        .iter()
-                        .any(|a| a.as_str().map(|a| a == activate_dep).unwrap_or(false))
-                    {
-                        continue;
-                    }
-                    let Some(activate_dep_pos) = activations.iter().position(|a| {
-                        a.as_str()
-                            .map(|a| a.starts_with(&strong_dep_feature_prefix))
-                            .unwrap_or(false)
-                    }) else {
-                        continue;
-                    };
-                    fixes += 1;
-                    activations.insert(activate_dep_pos, &activate_dep);
-                }
-            }
-        }
-    }
-    fixes
 }
 
 fn check_resolver_change<'gctx>(
@@ -1041,23 +968,19 @@ fn rustfix_and_fix(
         });
         let mut fixed = CodeFix::new(&code);
 
-        let mut already_applied = HashSet::new();
         for suggestion in suggestions.iter().rev() {
-            // This assumes that if any of the machine applicable fixes in
-            // a diagnostic suggestion is a duplicate, we should see the
-            // entire suggestion as a duplicate.
-            if suggestion
-                .solutions
-                .iter()
-                .any(|sol| !already_applied.insert(sol))
-            {
-                continue;
-            }
+            // As mentioned above in `rustfix_crate`,
+            // we don't immediately warn about suggestions that fail to apply here,
+            // and instead we save them off for later processing.
+            //
+            // However, we don't bother reporting conflicts that exactly match prior replacements.
+            // This is currently done to reduce noise for things like rust-lang/rust#51211,
+            // although it may be removed if that's fixed deeper in the compiler.
             match fixed.apply(suggestion) {
                 Ok(()) => fixed_file.fixes_applied += 1,
-                // As mentioned above in `rustfix_crate`, we don't immediately
-                // warn about suggestions that fail to apply here, and instead
-                // we save them off for later processing.
+                Err(rustfix::Error::AlreadyReplaced {
+                    is_identical: true, ..
+                }) => continue,
                 Err(e) => fixed_file.errors_applying_fixes.push(e.to_string()),
             }
         }

@@ -1,8 +1,11 @@
-use crate::core::compiler::{BuildConfig, MessageFormat, TimingOutput};
-use crate::core::resolver::CliFeatures;
-use crate::core::{Edition, Workspace};
+use crate::core::compiler::{
+    BuildConfig, CompileKind, MessageFormat, RustcTargetData, TimingOutput,
+};
+use crate::core::resolver::{CliFeatures, ForceAllTargets, HasDevUnits};
+use crate::core::{shell, Edition, Package, Target, TargetKind, Workspace};
+use crate::ops::lockfile::LOCKFILE_NAME;
 use crate::ops::registry::RegistryOrIndex;
-use crate::ops::{CompileFilter, CompileOptions, NewOptions, Packages, VersionControl};
+use crate::ops::{self, CompileFilter, CompileOptions, NewOptions, Packages, VersionControl};
 use crate::util::important_paths::find_root_manifest_for_wd;
 use crate::util::interning::InternedString;
 use crate::util::is_rustup;
@@ -18,6 +21,9 @@ use cargo_util_schemas::manifest::ProfileName;
 use cargo_util_schemas::manifest::RegistryName;
 use cargo_util_schemas::manifest::StringOrVec;
 use clap::builder::UnknownArgumentValueParser;
+use home::cargo_home_with_cwd;
+use semver::Version;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::path::PathBuf;
@@ -154,10 +160,16 @@ pub trait CommandExt: Sized {
     ) -> Self {
         self.arg_targets_lib_bin_example(lib, bin, bins, example, examples)
             ._arg(flag("tests", tests).help_heading(heading::TARGET_SELECTION))
-            ._arg(optional_multi_opt("test", "NAME", test).help_heading(heading::TARGET_SELECTION))
+            ._arg(
+                optional_multi_opt("test", "NAME", test)
+                    .help_heading(heading::TARGET_SELECTION)
+                    .add(clap_complete::ArgValueCandidates::new(get_test_candidates)),
+            )
             ._arg(flag("benches", benches).help_heading(heading::TARGET_SELECTION))
             ._arg(
-                optional_multi_opt("bench", "NAME", bench).help_heading(heading::TARGET_SELECTION),
+                optional_multi_opt("bench", "NAME", bench)
+                    .help_heading(heading::TARGET_SELECTION)
+                    .add(clap_complete::ArgValueCandidates::new(get_bench_candidates)),
             )
             ._arg(flag("all-targets", all).help_heading(heading::TARGET_SELECTION))
     }
@@ -172,11 +184,18 @@ pub trait CommandExt: Sized {
     ) -> Self {
         self._arg(flag("lib", lib).help_heading(heading::TARGET_SELECTION))
             ._arg(flag("bins", bins).help_heading(heading::TARGET_SELECTION))
-            ._arg(optional_multi_opt("bin", "NAME", bin).help_heading(heading::TARGET_SELECTION))
+            ._arg(
+                optional_multi_opt("bin", "NAME", bin)
+                    .help_heading(heading::TARGET_SELECTION)
+                    .add(clap_complete::ArgValueCandidates::new(get_bin_candidates)),
+            )
             ._arg(flag("examples", examples).help_heading(heading::TARGET_SELECTION))
             ._arg(
                 optional_multi_opt("example", "NAME", example)
-                    .help_heading(heading::TARGET_SELECTION),
+                    .help_heading(heading::TARGET_SELECTION)
+                    .add(clap_complete::ArgValueCandidates::new(
+                        get_example_candidates,
+                    )),
             )
     }
 
@@ -187,21 +206,35 @@ pub trait CommandExt: Sized {
         example: &'static str,
         examples: &'static str,
     ) -> Self {
-        self._arg(optional_multi_opt("bin", "NAME", bin).help_heading(heading::TARGET_SELECTION))
-            ._arg(flag("bins", bins).help_heading(heading::TARGET_SELECTION))
-            ._arg(
-                optional_multi_opt("example", "NAME", example)
-                    .help_heading(heading::TARGET_SELECTION),
-            )
-            ._arg(flag("examples", examples).help_heading(heading::TARGET_SELECTION))
+        self._arg(
+            optional_multi_opt("bin", "NAME", bin)
+                .help_heading(heading::TARGET_SELECTION)
+                .add(clap_complete::ArgValueCandidates::new(get_bin_candidates)),
+        )
+        ._arg(flag("bins", bins).help_heading(heading::TARGET_SELECTION))
+        ._arg(
+            optional_multi_opt("example", "NAME", example)
+                .help_heading(heading::TARGET_SELECTION)
+                .add(clap_complete::ArgValueCandidates::new(
+                    get_example_candidates,
+                )),
+        )
+        ._arg(flag("examples", examples).help_heading(heading::TARGET_SELECTION))
     }
 
     fn arg_targets_bin_example(self, bin: &'static str, example: &'static str) -> Self {
-        self._arg(optional_multi_opt("bin", "NAME", bin).help_heading(heading::TARGET_SELECTION))
-            ._arg(
-                optional_multi_opt("example", "NAME", example)
-                    .help_heading(heading::TARGET_SELECTION),
-            )
+        self._arg(
+            optional_multi_opt("bin", "NAME", bin)
+                .help_heading(heading::TARGET_SELECTION)
+                .add(clap_complete::ArgValueCandidates::new(get_bin_candidates)),
+        )
+        ._arg(
+            optional_multi_opt("example", "NAME", example)
+                .help_heading(heading::TARGET_SELECTION)
+                .add(clap_complete::ArgValueCandidates::new(
+                    get_example_candidates,
+                )),
+        )
     }
 
     fn arg_features(self) -> Self {
@@ -260,7 +293,8 @@ pub trait CommandExt: Sized {
         };
         self._arg(
             optional_multi_opt("target", "TRIPLE", target)
-                .help_heading(heading::COMPILATION_OPTIONS),
+                .help_heading(heading::COMPILATION_OPTIONS)
+                .add(clap_complete::ArgValueCandidates::new(get_target_triples)),
         )
         ._arg(unsupported_short_arg)
     }
@@ -295,6 +329,14 @@ pub trait CommandExt: Sized {
         )
     }
 
+    fn arg_lockfile_path(self) -> Self {
+        self._arg(
+            opt("lockfile-path", "Path to Cargo.lock (unstable)")
+                .value_name("PATH")
+                .help_heading(heading::MANIFEST_OPTIONS),
+        )
+    }
+
     fn arg_message_format(self) -> Self {
         self._arg(multi_opt("message-format", "FMT", "Error format"))
     }
@@ -324,7 +366,10 @@ pub trait CommandExt: Sized {
             .value_name("VCS")
             .value_parser(["git", "hg", "pijul", "fossil", "none"]),
         )
-        ._arg(flag("bin", "Use a binary (application) template [default]"))
+        ._arg(
+            flag("bin", "Use a binary (application) template [default]")
+                .add(clap_complete::ArgValueCandidates::new(get_bin_candidates)),
+        )
         ._arg(flag("lib", "Use a library template"))
         ._arg(
             opt("edition", "Edition to set for the crate generated")
@@ -341,7 +386,12 @@ pub trait CommandExt: Sized {
     }
 
     fn arg_registry(self, help: &'static str) -> Self {
-        self._arg(opt("registry", help).value_name("REGISTRY"))
+        self._arg(opt("registry", help).value_name("REGISTRY").add(
+            clap_complete::ArgValueCandidates::new(|| {
+                let candidates = get_registry_candidates();
+                candidates.unwrap_or_default()
+            }),
+        ))
     }
 
     fn arg_index(self, help: &'static str) -> Self {
@@ -517,14 +567,20 @@ pub trait ArgMatchesExt {
         root_manifest(self._value_of("manifest-path").map(Path::new), gctx)
     }
 
+    fn lockfile_path(&self, gctx: &GlobalContext) -> CargoResult<Option<PathBuf>> {
+        lockfile_path(self._value_of("lockfile-path").map(Path::new), gctx)
+    }
+
     #[tracing::instrument(skip_all)]
     fn workspace<'a>(&self, gctx: &'a GlobalContext) -> CargoResult<Workspace<'a>> {
         let root = self.root_manifest(gctx)?;
+        let lockfile_path = self.lockfile_path(gctx)?;
         let mut ws = Workspace::new(&root, gctx)?;
         ws.set_resolve_honors_rust_version(self.honor_rust_version());
         if gctx.cli_unstable().avoid_dev_deps {
             ws.set_require_optional_deps(false);
         }
+        ws.set_requested_lockfile_path(lockfile_path);
         Ok(ws)
     }
 
@@ -984,6 +1040,311 @@ pub fn root_manifest(manifest_path: Option<&Path>, gctx: &GlobalContext) -> Carg
     } else {
         find_root_manifest_for_wd(gctx.cwd())
     }
+}
+
+pub fn lockfile_path(
+    lockfile_path: Option<&Path>,
+    gctx: &GlobalContext,
+) -> CargoResult<Option<PathBuf>> {
+    let Some(lockfile_path) = lockfile_path else {
+        return Ok(None);
+    };
+
+    gctx.cli_unstable()
+        .fail_if_stable_opt("--lockfile-path", 14421)?;
+
+    let path = gctx.cwd().join(lockfile_path);
+
+    if !path.ends_with(LOCKFILE_NAME) {
+        bail!("the lockfile-path must be a path to a {LOCKFILE_NAME} file (please rename your lock file to {LOCKFILE_NAME})")
+    }
+    if path.is_dir() {
+        bail!(
+            "lockfile path `{}` is a directory but expected a file",
+            lockfile_path.display()
+        )
+    }
+
+    return Ok(Some(path));
+}
+
+pub fn get_registry_candidates() -> CargoResult<Vec<clap_complete::CompletionCandidate>> {
+    let gctx = new_gctx_for_completions()?;
+
+    if let Ok(Some(registries)) =
+        gctx.get::<Option<HashMap<String, HashMap<String, String>>>>("registries")
+    {
+        Ok(registries
+            .keys()
+            .map(|name| clap_complete::CompletionCandidate::new(name.to_owned()))
+            .collect())
+    } else {
+        Ok(vec![])
+    }
+}
+
+fn get_example_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    get_targets_from_metadata()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|target| match target.kind() {
+            TargetKind::ExampleBin => Some(clap_complete::CompletionCandidate::new(target.name())),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+}
+
+fn get_bench_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    get_targets_from_metadata()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|target| match target.kind() {
+            TargetKind::Bench => Some(clap_complete::CompletionCandidate::new(target.name())),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+}
+
+fn get_test_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    get_targets_from_metadata()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|target| match target.kind() {
+            TargetKind::Test => Some(clap_complete::CompletionCandidate::new(target.name())),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+}
+
+fn get_bin_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    get_targets_from_metadata()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|target| match target.kind() {
+            TargetKind::Bin => Some(clap_complete::CompletionCandidate::new(target.name())),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+}
+
+fn get_targets_from_metadata() -> CargoResult<Vec<Target>> {
+    let cwd = std::env::current_dir()?;
+    let gctx = GlobalContext::new(shell::Shell::new(), cwd.clone(), cargo_home_with_cwd(&cwd)?);
+    let ws = Workspace::new(&find_root_manifest_for_wd(&cwd)?, &gctx)?;
+
+    let packages = ws.members().collect::<Vec<_>>();
+
+    let targets = packages
+        .into_iter()
+        .flat_map(|pkg| pkg.targets().into_iter().cloned())
+        .collect::<Vec<_>>();
+
+    Ok(targets)
+}
+
+fn get_target_triples() -> Vec<clap_complete::CompletionCandidate> {
+    let mut candidates = Vec::new();
+
+    if let Ok(targets) = get_target_triples_from_rustup() {
+        candidates = targets;
+    }
+
+    if candidates.is_empty() {
+        if let Ok(targets) = get_target_triples_from_rustc() {
+            candidates = targets;
+        }
+    }
+
+    candidates
+}
+
+fn get_target_triples_from_rustup() -> CargoResult<Vec<clap_complete::CompletionCandidate>> {
+    let output = std::process::Command::new("rustup")
+        .arg("target")
+        .arg("list")
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+
+    Ok(stdout
+        .lines()
+        .map(|line| {
+            let target = line.split_once(' ');
+            match target {
+                None => clap_complete::CompletionCandidate::new(line.to_owned()).hide(true),
+                Some((target, _installed)) => clap_complete::CompletionCandidate::new(target),
+            }
+        })
+        .collect())
+}
+
+fn get_target_triples_from_rustc() -> CargoResult<Vec<clap_complete::CompletionCandidate>> {
+    let cwd = std::env::current_dir()?;
+    let gctx = GlobalContext::new(shell::Shell::new(), cwd.clone(), cargo_home_with_cwd(&cwd)?);
+    let ws = Workspace::new(&find_root_manifest_for_wd(&PathBuf::from(&cwd))?, &gctx);
+
+    let rustc = gctx.load_global_rustc(ws.as_ref().ok())?;
+
+    let (stdout, _stderr) =
+        rustc.cached_output(rustc.process().arg("--print").arg("target-list"), 0)?;
+
+    Ok(stdout
+        .lines()
+        .map(|line| clap_complete::CompletionCandidate::new(line.to_owned()))
+        .collect())
+}
+
+pub fn get_pkg_id_spec_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    let mut candidates = vec![];
+
+    let package_map = HashMap::<&str, Vec<Package>>::new();
+    let package_map =
+        get_packages()
+            .unwrap_or_default()
+            .into_iter()
+            .fold(package_map, |mut map, package| {
+                map.entry(package.name().as_str())
+                    .or_insert_with(Vec::new)
+                    .push(package);
+                map
+            });
+
+    let unique_name_candidates = package_map
+        .iter()
+        .filter(|(_name, packages)| packages.len() == 1)
+        .map(|(name, packages)| {
+            clap_complete::CompletionCandidate::new(name.to_string()).help(
+                packages[0]
+                    .manifest()
+                    .metadata()
+                    .description
+                    .to_owned()
+                    .map(From::from),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let duplicate_name_pairs = package_map
+        .iter()
+        .filter(|(_name, packages)| packages.len() > 1)
+        .collect::<Vec<_>>();
+
+    let mut duplicate_name_candidates = vec![];
+    for (name, packages) in duplicate_name_pairs {
+        let mut version_count: HashMap<&Version, usize> = HashMap::new();
+
+        for package in packages {
+            *version_count.entry(package.version()).or_insert(0) += 1;
+        }
+
+        for package in packages {
+            if let Some(&count) = version_count.get(package.version()) {
+                if count == 1 {
+                    duplicate_name_candidates.push(
+                        clap_complete::CompletionCandidate::new(format!(
+                            "{}@{}",
+                            name,
+                            package.version()
+                        ))
+                        .help(
+                            package
+                                .manifest()
+                                .metadata()
+                                .description
+                                .to_owned()
+                                .map(From::from),
+                        ),
+                    );
+                } else {
+                    duplicate_name_candidates.push(
+                        clap_complete::CompletionCandidate::new(format!(
+                            "{}",
+                            package.package_id().to_spec()
+                        ))
+                        .help(
+                            package
+                                .manifest()
+                                .metadata()
+                                .description
+                                .to_owned()
+                                .map(From::from),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    candidates.extend(unique_name_candidates);
+    candidates.extend(duplicate_name_candidates);
+
+    candidates
+}
+
+fn get_packages() -> CargoResult<Vec<Package>> {
+    let gctx = new_gctx_for_completions()?;
+
+    let ws = Workspace::new(&find_root_manifest_for_wd(gctx.cwd())?, &gctx)?;
+
+    let requested_kinds = CompileKind::from_requested_targets(ws.gctx(), &[])?;
+    let mut target_data = RustcTargetData::new(&ws, &requested_kinds)?;
+    // `cli_features.all_features` must be true in case that `specs` is empty.
+    let cli_features = CliFeatures::new_all(true);
+    let has_dev_units = HasDevUnits::Yes;
+    let force_all_targets = ForceAllTargets::No;
+    let dry_run = true;
+
+    let ws_resolve = ops::resolve_ws_with_opts(
+        &ws,
+        &mut target_data,
+        &requested_kinds,
+        &cli_features,
+        &[],
+        has_dev_units,
+        force_all_targets,
+        dry_run,
+    )?;
+
+    let packages = ws_resolve
+        .pkg_set
+        .packages()
+        .map(Clone::clone)
+        .collect::<Vec<_>>();
+
+    Ok(packages)
+}
+
+fn new_gctx_for_completions() -> CargoResult<GlobalContext> {
+    let cwd = std::env::current_dir()?;
+    let mut gctx = GlobalContext::new(shell::Shell::new(), cwd.clone(), cargo_home_with_cwd(&cwd)?);
+
+    let verbose = 0;
+    let quiet = true;
+    let color = None;
+    let frozen = false;
+    let locked = true;
+    let offline = false;
+    let target_dir = None;
+    let unstable_flags = &[];
+    let cli_config = &[];
+
+    gctx.configure(
+        verbose,
+        quiet,
+        color,
+        frozen,
+        locked,
+        offline,
+        &target_dir,
+        unstable_flags,
+        cli_config,
+    )?;
+
+    Ok(gctx)
 }
 
 #[track_caller]

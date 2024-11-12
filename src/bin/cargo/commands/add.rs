@@ -87,6 +87,7 @@ Example uses:
 - Depend on crates with the same name from different registries"),
         ])
         .arg_manifest_path_without_unsupported_path_tip()
+        .arg_lockfile_path()
         .arg_package("Package to modify")
         .arg_ignore_rust_version()
         .arg_dry_run("Don't actually write the manifest")
@@ -100,6 +101,12 @@ Example uses:
                 .help("Filesystem path to local crate to add")
                 .group("selected")
                 .conflicts_with("git"),
+            clap::Arg::new("base")
+                .long("base")
+                .action(ArgAction::Set)
+                .value_name("BASE")
+                .help("The path base to use when adding from a local crate (unstable).")
+                .requires("path"),
             clap::Arg::new("git")
                 .long("git")
                 .action(ArgAction::Set)
@@ -137,7 +144,11 @@ This is the catch all, handling hashes to named references in remote repositorie
                 .long("registry")
                 .action(ArgAction::Set)
                 .value_name("NAME")
-                .help("Package registry for this dependency"),
+                .help("Package registry for this dependency")
+                .add(clap_complete::ArgValueCandidates::new(|| {
+                    let candidates = get_registry_candidates();
+                    candidates.unwrap_or_default()
+                })),
         ])
         .next_help_heading("Section")
         .args([
@@ -223,6 +234,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
 fn parse_dependencies(gctx: &GlobalContext, matches: &ArgMatches) -> CargoResult<Vec<DepOp>> {
     let path = matches.get_one::<String>("path");
+    let base = matches.get_one::<String>("base");
     let git = matches.get_one::<String>("git");
     let branch = matches.get_one::<String>("branch");
     let rev = matches.get_one::<String>("rev");
@@ -328,6 +340,7 @@ fn parse_dependencies(gctx: &GlobalContext, matches: &ArgMatches) -> CargoResult
             public,
             registry: registry.clone(),
             path: path.map(String::from),
+            base: base.map(String::from),
             git: git.map(String::from),
             branch: branch.map(String::from),
             rev: rev.map(String::from),

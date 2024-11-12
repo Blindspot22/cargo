@@ -1,11 +1,19 @@
-use std::fmt::{self, Display};
-
+use super::semver_eval_ext;
 use semver::{Comparator, Op, Version, VersionReq};
+use std::fmt::{self, Display};
 
 pub trait VersionExt {
     fn is_prerelease(&self) -> bool;
 
-    fn to_exact_req(&self) -> VersionReq;
+    fn to_req(&self, op: Op) -> VersionReq;
+
+    fn to_exact_req(&self) -> VersionReq {
+        self.to_req(Op::Exact)
+    }
+
+    fn to_caret_req(&self) -> VersionReq {
+        self.to_req(Op::Caret)
+    }
 }
 
 impl VersionExt for Version {
@@ -13,16 +21,26 @@ impl VersionExt for Version {
         !self.pre.is_empty()
     }
 
-    fn to_exact_req(&self) -> VersionReq {
+    fn to_req(&self, op: Op) -> VersionReq {
         VersionReq {
             comparators: vec![Comparator {
-                op: Op::Exact,
+                op,
                 major: self.major,
                 minor: Some(self.minor),
                 patch: Some(self.patch),
                 pre: self.pre.clone(),
             }],
         }
+    }
+}
+
+pub trait VersionReqExt {
+    fn matches_prerelease(&self, version: &Version) -> bool;
+}
+
+impl VersionReqExt for VersionReq {
+    fn matches_prerelease(&self, version: &Version) -> bool {
+        semver_eval_ext::matches_prerelease(self, version)
     }
 }
 
@@ -111,17 +129,14 @@ impl OptVersionReq {
         }
     }
 
-    /// Since Semver does not support prerelease versions,
-    /// the simplest implementation is taken here without comparing the prerelease section.
-    /// The logic here is temporary, we'll have to consider more boundary conditions later,
-    /// and we're not sure if this part of the functionality should be implemented in semver or cargo.
+    /// Allows to match pre-release in SemVer-Compatible way.
+    /// See [`semver_eval_ext`] for matches_prerelease semantics.
     pub fn matches_prerelease(&self, version: &Version) -> bool {
-        if version.is_prerelease() {
-            let mut version = version.clone();
-            version.pre = semver::Prerelease::EMPTY;
-            return self.matches(&version);
+        if let OptVersionReq::Req(req) = self {
+            return req.matches_prerelease(version);
+        } else {
+            return self.matches(version);
         }
-        self.matches(version)
     }
 
     pub fn matches(&self, version: &Version) -> bool {
@@ -178,7 +193,10 @@ impl From<VersionReq> for OptVersionReq {
 
 #[cfg(test)]
 mod matches_prerelease {
+    use semver::VersionReq;
+
     use super::OptVersionReq;
+    use super::Version;
 
     #[test]
     fn prerelease() {
@@ -203,12 +221,12 @@ mod matches_prerelease {
         // https://rust-lang.github.io/rfcs/3493-precise-pre-release-cargo-update.html#version-ranges-with-pre-release-upper-bounds
         let cases = [
             //
-            ("1.2.3", "1.2.3-0", true), // bug, must be false
-            ("1.2.3", "1.2.3-1", true), // bug, must be false
+            ("1.2.3", "1.2.3-0", false),
+            ("1.2.3", "1.2.3-1", false),
             ("1.2.3", "1.2.4-0", true),
             //
-            (">=1.2.3", "1.2.3-0", true), // bug, must be false
-            (">=1.2.3", "1.2.3-1", true), // bug, must be false
+            (">=1.2.3", "1.2.3-0", false),
+            (">=1.2.3", "1.2.3-1", false),
             (">=1.2.3", "1.2.4-0", true),
             //
             (">1.2.3", "1.2.3-0", false),
@@ -219,17 +237,25 @@ mod matches_prerelease {
             (">1.2.3, <1.2.4", "1.2.3-1", false),
             (">1.2.3, <1.2.4", "1.2.4-0", false), // upper bound semantic
             //
-            (">=1.2.3, <1.2.4", "1.2.3-0", true), // bug, must be false
-            (">=1.2.3, <1.2.4", "1.2.3-1", true), // bug, must be false
+            (">=1.2.3, <1.2.4", "1.2.3-0", false),
+            (">=1.2.3, <1.2.4", "1.2.3-1", false),
             (">=1.2.3, <1.2.4", "1.2.4-0", false), // upper bound semantic
             //
             (">1.2.3, <=1.2.4", "1.2.3-0", false),
             (">1.2.3, <=1.2.4", "1.2.3-1", false),
             (">1.2.3, <=1.2.4", "1.2.4-0", true),
             //
-            (">=1.2.3-0, <1.2.3", "1.2.3-0", false), // upper bound semantic
-            (">=1.2.3-0, <1.2.3", "1.2.3-1", false), // upper bound semantic
+            (">=1.2.3-0, <1.2.3", "1.2.3-0", true), // upper bound semantic
+            (">=1.2.3-0, <1.2.3", "1.2.3-1", true), // upper bound semantic
             (">=1.2.3-0, <1.2.3", "1.2.4-0", false),
+            //
+            ("1.2.3", "2.0.0-0", false), // upper bound semantics
+            ("=1.2.3-0", "1.2.3", false),
+            ("=1.2.3-0", "1.2.3-0", true),
+            ("=1.2.3-0", "1.2.4", false),
+            (">=1.2.3-2, <1.2.3-4", "1.2.3-0", false),
+            (">=1.2.3-2, <1.2.3-4", "1.2.3-3", true),
+            (">=1.2.3-2, <1.2.3-4", "1.2.3-5", false), // upper bound semantics
         ];
         for (req, ver, expected) in cases {
             let version_req = req.parse().unwrap();
@@ -237,5 +263,20 @@ mod matches_prerelease {
             let matched = OptVersionReq::Req(version_req).matches_prerelease(&version);
             assert_eq!(expected, matched, "req: {req}; ver: {ver}");
         }
+    }
+
+    #[test]
+    fn opt_version_req_matches_prerelease() {
+        let req_ver: VersionReq = "^1.2.3-rc.0".parse().unwrap();
+        let to_ver: Version = "1.2.3-rc.0".parse().unwrap();
+
+        let req = OptVersionReq::Req(req_ver.clone());
+        assert!(req.matches_prerelease(&to_ver));
+
+        let req = OptVersionReq::Locked(to_ver.clone(), req_ver.clone());
+        assert!(req.matches_prerelease(&to_ver));
+
+        let req = OptVersionReq::Precise(to_ver.clone(), req_ver.clone());
+        assert!(req.matches_prerelease(&to_ver));
     }
 }

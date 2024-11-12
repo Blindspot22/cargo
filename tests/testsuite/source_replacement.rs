@@ -284,12 +284,55 @@ fn source_replacement_with_registry_url() {
         .replace_crates_io(crates_io.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] `using-registry-url` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `using-registry-url`)
 [CHECKING] bar v0.0.1
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn source_replacement_with_no_package_in_directoy() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                bar = { version = "^0.8.9" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    let root = paths::root();
+    t!(fs::create_dir(&root.join("vendor")));
+
+    let crates_io = setup_replacement(&format!(
+        r#"
+            [source.crates-io]
+            replace-with = "vendored-sources"
+
+            [source.vendored-sources]
+            directory = "vendor"
+        "#
+    ));
+
+    p.cargo("build")
+        .replace_crates_io(crates_io.index_url())
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] no matching package named `bar` found
+location searched: directory source `[ROOT]/vendor` (which is replacing registry `crates-io`)
+required by package `foo v0.1.0 ([ROOT]/foo)`
 
 "#]])
         .run();

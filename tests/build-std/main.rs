@@ -155,6 +155,66 @@ fn basic() {
 }
 
 #[cargo_test(build_std_real)]
+fn host_proc_macro() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                macro_test = { path = "macro_test" }
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            r#"
+            extern crate macro_test;
+            use macro_test::make_answer;
+
+            make_answer!();
+
+            fn main() {
+                println!("Hello, World: {}", answer());
+            }
+            "#,
+        )
+        .file(
+            "macro_test/Cargo.toml",
+            r#"
+            [package]
+            name = "macro_test"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            proc-macro = true
+            "#,
+        )
+        .file(
+            "macro_test/src/lib.rs",
+            r#"
+            extern crate proc_macro;
+            use proc_macro::TokenStream;
+
+            #[proc_macro]
+            pub fn make_answer(_item: TokenStream) -> TokenStream {
+                "fn answer() -> u32 { 42 }".parse().unwrap()
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build")
+        .build_std_arg("std")
+        .build_std_arg("proc_macro")
+        .run();
+}
+
+#[cargo_test(build_std_real)]
 fn cross_custom() {
     let p = project()
         .file(
@@ -290,10 +350,10 @@ fn remap_path_scope() {
 [FINISHED] `release` profile [optimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `target/[HOST_TARGET]/release/foo`
 [..]thread '[..]' panicked at [..]src/main.rs:3:[..]:
-remap to /rustc/<hash>
-             at /rustc/[..]/library/std/src/[..]
-             at ./src/main.rs:3:[..]
-             at /rustc/[..]/library/core/src/[..]
+[..]remap to /rustc/<hash>[..]
+[..]at /rustc/[..]/library/std/src/[..]
+[..]at ./src/main.rs:3:[..]
+[..]at /rustc/[..]/library/core/src/[..]
 ...
 "#]]
             .unordered(),

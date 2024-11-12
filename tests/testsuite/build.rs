@@ -95,7 +95,7 @@ fn cargo_fail_with_no_stderr() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
-[ERROR] could not compile `foo` (bin "foo") due to 2 previous errors
+[ERROR] could not compile `foo` (bin "foo") due to 1 previous error
 
 "#]])
         .run();
@@ -132,7 +132,6 @@ fn cargo_compile_incremental() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn incremental_profile() {
     let p = project()
@@ -176,7 +175,6 @@ fn incremental_profile() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn incremental_config() {
     let p = project()
@@ -870,7 +868,6 @@ fn cargo_compile_with_invalid_code_in_deps() {
         .with_status(101)
         .with_stderr_data(
             str![[r#"
-[LOCKING] 3 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/baz)
 [ERROR] could not compile `bar` (lib) due to 1 previous error
@@ -939,7 +936,7 @@ fn cargo_compile_with_warnings_in_a_dep_package() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [WARNING] [..]dead[..]
 ...
@@ -1525,7 +1522,6 @@ fn ignores_carriage_return_in_lockfile() {
     p.cargo("build").run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn cargo_default_env_metadata_env_var() {
     // Ensure that path dep + dylib + env_var get metadata
@@ -1625,6 +1621,7 @@ fn crate_env_vars() {
                 static VERSION_PRE: &'static str = env!("CARGO_PKG_VERSION_PRE");
                 static VERSION: &'static str = env!("CARGO_PKG_VERSION");
                 static CARGO_MANIFEST_DIR: &'static str = env!("CARGO_MANIFEST_DIR");
+                static CARGO_MANIFEST_PATH: &'static str = env!("CARGO_MANIFEST_PATH");
                 static PKG_NAME: &'static str = env!("CARGO_PKG_NAME");
                 static HOMEPAGE: &'static str = env!("CARGO_PKG_HOMEPAGE");
                 static REPOSITORY: &'static str = env!("CARGO_PKG_REPOSITORY");
@@ -1638,9 +1635,9 @@ fn crate_env_vars() {
 
 
                 fn main() {
-                    let s = format!("{}-{}-{} @ {} in {}", VERSION_MAJOR,
+                    let s = format!("{}-{}-{} @ {} in {} file {}", VERSION_MAJOR,
                                     VERSION_MINOR, VERSION_PATCH, VERSION_PRE,
-                                    CARGO_MANIFEST_DIR);
+                                    CARGO_MANIFEST_DIR, CARGO_MANIFEST_PATH);
                      assert_eq!(s, foo::version());
                      println!("{}", s);
                      assert_eq!("foo", PKG_NAME);
@@ -1659,11 +1656,6 @@ fn crate_env_vars() {
 
                     // Verify CARGO_TARGET_TMPDIR isn't set for bins
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
-
-                    // Verify CARGO_RUSTC_CURRENT_DIR is set for examples
-                    let workspace_dir = std::path::Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                    let file_path = workspace_dir.join(file!());
-                    assert!(file_path.exists(), "{}", file_path.display());
                 }
             "#,
         )
@@ -1674,12 +1666,13 @@ fn crate_env_vars() {
                 use std::path::PathBuf;
 
                 pub fn version() -> String {
-                    format!("{}-{}-{} @ {} in {}",
+                    format!("{}-{}-{} @ {} in {} file {}",
                             env!("CARGO_PKG_VERSION_MAJOR"),
                             env!("CARGO_PKG_VERSION_MINOR"),
                             env!("CARGO_PKG_VERSION_PATCH"),
                             env!("CARGO_PKG_VERSION_PRE"),
-                            env!("CARGO_MANIFEST_DIR"))
+                            env!("CARGO_MANIFEST_DIR"),
+                            env!("CARGO_MANIFEST_PATH"))
                 }
 
                 pub fn check_no_int_test_env() {
@@ -1700,11 +1693,6 @@ fn crate_env_vars() {
                     // Check that CARGO_TARGET_TMPDIR isn't set for lib code
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
                     env::var("CARGO_TARGET_TMPDIR").unwrap_err();
-
-                    // Verify CARGO_RUSTC_CURRENT_DIR is set for examples
-                    let workspace_dir = std::path::Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                    let file_path = workspace_dir.join(file!());
-                    assert!(file_path.exists(), "{}", file_path.display());
                 }
 
                 #[test]
@@ -1712,13 +1700,6 @@ fn crate_env_vars() {
                     // Check that CARGO_TARGET_TMPDIR isn't set for unit tests
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
                     env::var("CARGO_TARGET_TMPDIR").unwrap_err();
-                }
-
-                #[test]
-                fn unit_env_cargo_rustc_current_dir() {
-                    let workspace_dir = std::path::Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                    let file_path = workspace_dir.join(file!());
-                    assert!(file_path.exists(), "{}", file_path.display());
                 }
             "#,
         )
@@ -1736,11 +1717,6 @@ fn crate_env_vars() {
 
                     // Verify CARGO_TARGET_TMPDIR isn't set for examples
                     assert!(option_env!("CARGO_TARGET_TMPDIR").is_none());
-
-                    // Verify CARGO_RUSTC_CURRENT_DIR is set for examples
-                    let workspace_dir = std::path::Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                    let file_path = workspace_dir.join(file!());
-                    assert!(file_path.exists(), "{}", file_path.display());
                 }
             "#,
         )
@@ -1750,13 +1726,6 @@ fn crate_env_vars() {
                 #[test]
                 fn integration_env_cargo_target_tmpdir() {
                     foo::check_tmpdir(option_env!("CARGO_TARGET_TMPDIR"));
-                }
-
-                #[test]
-                fn integration_env_cargo_rustc_current_dir() {
-                    let workspace_dir = std::path::Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                    let file_path = workspace_dir.join(file!());
-                    assert!(file_path.exists(), "{}", file_path.display());
                 }
             "#,
         );
@@ -1773,13 +1742,6 @@ fn crate_env_vars() {
                 fn bench_env_cargo_target_tmpdir(_: &mut Bencher) {
                     foo::check_tmpdir(option_env!("CARGO_TARGET_TMPDIR"));
                 }
-
-                #[test]
-                fn bench_env_cargo_rustc_current_dir() {
-                    let workspace_dir = std::path::Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                    let file_path = workspace_dir.join(file!());
-                    assert!(file_path.exists(), "{}", file_path.display());
-                }
             "#,
         )
         .build()
@@ -1788,236 +1750,26 @@ fn crate_env_vars() {
     };
 
     println!("build");
-    p.cargo("build -v")
-        .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-        .run();
+    p.cargo("build -v").run();
 
     println!("bin");
     p.process(&p.bin("foo-bar"))
         .with_stdout_data(str![[r#"
-0-5-1 @ alpha.1 in [ROOT]/foo
+0-5-1 @ alpha.1 in [ROOT]/foo file [ROOT]/foo/Cargo.toml
 
 "#]])
         .run();
 
     println!("example");
-    p.cargo("run --example ex-env-vars -v")
-        .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-        .run();
+    p.cargo("run --example ex-env-vars -v").run();
 
     println!("test");
-    p.cargo("test -v")
-        .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-        .run();
+    p.cargo("test -v").run();
 
     if is_nightly() {
         println!("bench");
-        p.cargo("bench -v")
-            .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-            .run();
+        p.cargo("bench -v").run();
     }
-}
-
-#[cargo_test]
-fn cargo_rustc_current_dir_foreign_workspace_dep() {
-    let foo = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [workspace]
-
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            edition = "2015"
-            authors = []
-
-            [dependencies]
-            baz.path = "../baz"
-            baz_member.path = "../baz/baz_member"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-    let _baz = project()
-        .at("baz")
-        .file(
-            "Cargo.toml",
-            r#"
-            [workspace]
-            members = ["baz_member"]
-
-            [package]
-            name = "baz"
-            version = "0.1.0"
-            edition = "2015"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .file(
-            "tests/env.rs",
-            r#"
-            use std::path::Path;
-
-            #[test]
-            fn baz_env() {
-                let workspace_dir = Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                let manifest_dir = Path::new(option_env!("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-                let current_dir = std::env::current_dir().expect("current_dir");
-                let file_path = workspace_dir.join(file!());
-                assert!(file_path.exists(), "{}", file_path.display());
-                let workspace_dir = std::fs::canonicalize(current_dir.join(workspace_dir)).expect("CARGO_RUSTC_CURRENT_DIR");
-                let manifest_dir = std::fs::canonicalize(current_dir.join(manifest_dir)).expect("CARGO_MANIFEST_DIR");
-                assert_eq!(workspace_dir, manifest_dir);
-            }
-        "#,
-        )
-        .file(
-            "baz_member/Cargo.toml",
-            r#"
-            [package]
-            name = "baz_member"
-            version = "0.1.0"
-            edition = "2015"
-            authors = []
-            "#,
-        )
-        .file("baz_member/src/lib.rs", "")
-        .file(
-            "baz_member/tests/env.rs",
-            r#"
-            use std::path::Path;
-
-            #[test]
-            fn baz_member_env() {
-                let workspace_dir = Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                let file_path = workspace_dir.join(file!());
-                assert!(file_path.exists(), "{}", file_path.display());
-            }
-        "#,
-        )
-        .build();
-
-    // Verify it works from a different workspace
-    foo.cargo("test -p baz")
-        .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-        .with_stdout_data(str![[r#"
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-running 1 test
-test baz_env ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-"#]])
-        .run();
-    foo.cargo("test -p baz_member")
-        .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-        .with_stdout_data(str![[r#"
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-running 1 test
-test baz_member_env ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-"#]])
-        .run();
-}
-
-#[cargo_test]
-fn cargo_rustc_current_dir_non_local_dep() {
-    Package::new("bar", "0.1.0")
-        .file(
-            "tests/bar_env.rs",
-            r#"
-            use std::path::Path;
-
-            #[test]
-            fn bar_env() {
-                let workspace_dir = Path::new(option_env!("CARGO_RUSTC_CURRENT_DIR").expect("CARGO_RUSTC_CURRENT_DIR"));
-                let manifest_dir = Path::new(option_env!("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-                let current_dir = std::env::current_dir().expect("current_dir");
-                let file_path = workspace_dir.join(file!());
-                assert!(file_path.exists(), "{}", file_path.display());
-                let workspace_dir = std::fs::canonicalize(current_dir.join(workspace_dir)).expect("CARGO_RUSTC_CURRENT_DIR");
-                let manifest_dir = std::fs::canonicalize(current_dir.join(manifest_dir)).expect("CARGO_MANIFEST_DIR");
-                assert_eq!(workspace_dir, manifest_dir);
-            }
-        "#,
-        )
-        .publish();
-
-    let p = project()
-        .file("src/lib.rs", "")
-        .file(
-            "Cargo.toml",
-            r#"
-                [package]
-                name = "foo"
-                version = "0.0.1"
-                edition = "2015"
-
-                [dependencies]
-                bar = "0.1.0"
-            "#,
-        )
-        .build();
-
-    p.cargo("test -p bar")
-        .masquerade_as_nightly_cargo(&["CARGO_RUSTC_CURRENT_DIR"])
-        .with_stdout_data(str![[r#"
-
-running 1 test
-test bar_env ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-"#]])
-        .run();
-}
-
-#[cargo_test]
-fn cargo_rustc_current_dir_is_not_stable() {
-    if is_nightly() {
-        return;
-    }
-    let p = project()
-        .file(
-            "tests/env.rs",
-            r#"
-                use std::path::Path;
-
-                #[test]
-                fn env() {
-                    assert_eq!(option_env!("CARGO_RUSTC_CURRENT_DIR"), None);
-                }
-            "#,
-        )
-        .build();
-
-    p.cargo("test").run();
 }
 
 #[cargo_test]
@@ -2146,6 +1898,66 @@ fn crate_library_path_env_var() {
         .build();
 
     setenv_for_removing_empty_component(p.cargo("run")).run();
+}
+
+// See https://github.com/rust-lang/cargo/issues/14194
+#[cargo_test]
+fn issue_14194_deduplicate_library_path_env_var() {
+    let p = project()
+        .file(
+            "src/main.rs",
+            &format!(
+                r#"
+                    use std::process::Command;
+                    fn main() {{
+                        let level: i32 = std::env::args().nth(1).unwrap().parse().unwrap();
+                        let txt = "var.txt";
+                        let lib_path = std::env::var("{}").unwrap();
+
+                        // Make sure we really have something in dylib search path.
+                        let count = std::env::split_paths(&lib_path).count();
+                        assert!(count > 0);
+
+                        if level >= 3 {{
+                            std::fs::write(txt, &lib_path).unwrap();
+                        }} else {{
+                            let prev_lib_path = std::fs::read_to_string(txt).unwrap();
+                            // Ensure no duplicate insertion to dylib search paths
+                            // when calling `cargo run` recursively.
+                            assert_eq!(lib_path, prev_lib_path);
+                        }}
+
+                        if level == 0 {{
+                            return;
+                        }}
+                        
+                        let _  = Command::new(std::env!("CARGO"))
+                        .arg("run")
+                        .arg("--")
+                        .arg((level - 1).to_string())
+                        .status()
+                        .unwrap();
+                    }}
+                "#,
+                dylib_path_envvar(),
+            ),
+        )
+        .build();
+
+    setenv_for_removing_empty_component(p.cargo("run -- 3"))
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `target/debug/foo[EXE] 3`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `target/debug/foo[EXE] 2`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `target/debug/foo[EXE] 1`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `target/debug/foo[EXE] 0`
+
+"#]])
+        .run();
 }
 
 // Regression test for #4277
@@ -3423,7 +3235,7 @@ fn bad_platform_specific_dependency() {
     p.cargo("build")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
 error[E0463]: can't find crate for `bar`
 ...
@@ -3653,7 +3465,7 @@ fn transitive_dependencies_not_available() {
     p.cargo("build -v")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bbbbb v0.0.1 ([ROOT]/foo/b)
 [RUNNING] `rustc [..]
 [COMPILING] aaaaa v0.0.1 ([ROOT]/foo/a)
@@ -4064,7 +3876,7 @@ fn invalid_spec() {
     p.cargo("build -p notAValidDep")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [ERROR] package ID specification `notAValidDep` did not match any packages
 
 "#]])
@@ -4125,7 +3937,6 @@ fn panic_abort_compiles_with_panic_abort() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn compiler_json_error_format() {
     let p = project()
@@ -4154,148 +3965,98 @@ fn compiler_json_error_format() {
 
     let output = |fresh| {
         r#"
-            {
-                "reason":"compiler-artifact",
-                "package_id":"path+file:///[..]/foo#0.5.0",
-                "manifest_path": "[..]",
-                "target":{
-                    "kind":["custom-build"],
-                    "crate_types":["bin"],
-                    "doc": false,
-                    "doctest": false,
-                    "edition": "2015",
-                    "name":"build-script-build",
-                    "src_path":"[..]build.rs",
-                    "test": false
-                },
-                "profile": {
-                    "debug_assertions": true,
-                    "debuginfo": 0,
-                    "opt_level": "0",
-                    "overflow_checks": true,
-                    "test": false
-                },
-                "executable": null,
-                "features": [],
-                "filenames": "{...}",
-                "fresh": $FRESH
-            }
-
-            {
-                "reason":"compiler-message",
-                "package_id":"path+file:///[..]/bar#0.5.0",
-                "manifest_path": "[..]",
-                "target":{
-                    "kind":["lib"],
-                    "crate_types":["lib"],
-                    "doc": true,
-                    "doctest": true,
-                    "edition": "2015",
-                    "name":"bar",
-                    "src_path":"[..]lib.rs",
-                    "test": true
-                },
-                "message":"{...}"
-            }
-
-            {
-                "reason":"compiler-artifact",
-                "profile": {
-                    "debug_assertions": true,
-                    "debuginfo": 2,
-                    "opt_level": "0",
-                    "overflow_checks": true,
-                    "test": false
-                },
-                "executable": null,
-                "features": [],
-                "package_id":"path+file:///[..]/bar#0.5.0",
-                "manifest_path": "[..]",
-                "target":{
-                    "kind":["lib"],
-                    "crate_types":["lib"],
-                    "doc": true,
-                    "doctest": true,
-                    "edition": "2015",
-                    "name":"bar",
-                    "src_path":"[..]lib.rs",
-                    "test": true
-                },
-                "filenames":[
-                    "[..].rlib",
-                    "[..].rmeta"
-                ],
-                "fresh": $FRESH
-            }
-
-            {
-                "reason":"build-script-executed",
-                "package_id":"path+file:///[..]/foo#0.5.0",
-                "linked_libs":[],
-                "linked_paths":[],
-                "env":[],
-                "cfgs":["xyz"],
-                "out_dir": "[..]target/debug/build/foo-[..]/out"
-            }
-
-            {
-                "reason":"compiler-message",
-                "package_id":"path+file:///[..]/foo#0.5.0",
-                "manifest_path": "[..]",
-                "target":{
-                    "kind":["bin"],
-                    "crate_types":["bin"],
-                    "doc": true,
-                    "doctest": false,
-                    "edition": "2015",
-                    "name":"foo",
-                    "src_path":"[..]main.rs",
-                    "test": true
-                },
-                "message":"{...}"
-            }
-
-            {
-                "reason":"compiler-artifact",
-                "package_id":"path+file:///[..]/foo#0.5.0",
-                "manifest_path": "[..]",
-                "target":{
-                    "kind":["bin"],
-                    "crate_types":["bin"],
-                    "doc": true,
-                    "doctest": false,
-                    "edition": "2015",
-                    "name":"foo",
-                    "src_path":"[..]main.rs",
-                    "test": true
-                },
-                "profile": {
-                    "debug_assertions": true,
-                    "debuginfo": 2,
-                    "opt_level": "0",
-                    "overflow_checks": true,
-                    "test": false
-                },
-                "executable": "[..]/foo/target/debug/foo[EXE]",
-                "features": [],
-                "filenames": "{...}",
-                "fresh": $FRESH
-            }
-
-            {"reason": "build-finished", "success": true}
-        "#
+[
+  {
+    "executable": null,
+    "features": [],
+    "fresh": $FRESH,
+    "manifest_path": "[ROOT]/foo/Cargo.toml",
+    "package_id": "path+[ROOTURL]/foo#0.5.0",
+    "reason": "compiler-artifact",
+    "target": {
+      "kind": ["custom-build"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "manifest_path": "[ROOT]/foo/bar/Cargo.toml",
+    "package_id": "path+[ROOTURL]/foo/bar#0.5.0",
+    "reason": "compiler-message",
+    "target": {
+      "kind": ["lib"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "executable": null,
+    "features": [],
+    "fresh": $FRESH,
+    "manifest_path": "[ROOT]/foo/bar/Cargo.toml",
+    "package_id": "path+[ROOTURL]/foo/bar#0.5.0",
+    "reason": "compiler-artifact",
+    "target": {
+      "kind": ["lib"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "cfgs": [
+      "xyz"
+    ],
+    "env": [],
+    "linked_libs": [],
+    "linked_paths": [],
+    "out_dir": "[ROOT]/foo/target/debug/build/foo-[HASH]/out",
+    "package_id": "path+[ROOTURL]/foo#0.5.0",
+    "reason": "build-script-executed"
+  },
+  {
+    "manifest_path": "[ROOT]/foo/Cargo.toml",
+    "package_id": "path+[ROOTURL]/foo#0.5.0",
+    "reason": "compiler-message",
+    "target": {
+      "kind": ["bin"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "features": [],
+    "fresh": $FRESH,
+    "manifest_path": "[ROOT]/foo/Cargo.toml",
+    "package_id": "path+[ROOTURL]/foo#0.5.0",
+    "reason": "compiler-artifact",
+    "target": {
+      "kind": ["bin"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "reason": "build-finished",
+    "success": true
+  },
+  "{...}"
+]
+"#
         .replace("$FRESH", fresh)
+        .is_json()
+        .against_jsonlines()
+        .unordered()
     };
 
     // Use `jobs=1` to ensure that the order of messages is consistent.
     p.cargo("build -v --message-format=json --jobs=1")
-        .with_json_contains_unordered(&output("false"))
+        .with_stdout_data(output("false"))
         .run();
 
     // With fresh build, we should repeat the artifacts,
     // and replay the cached compiler warnings.
     p.cargo("build -v --message-format=json --jobs=1")
-        .with_json_contains_unordered(&output("true"))
+        .with_stdout_data(output("true"))
         .run();
 }
 
@@ -4315,7 +4076,6 @@ fn wrong_message_format_option() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn message_format_json_forward_stderr() {
     let p = project()
@@ -4324,54 +4084,42 @@ fn message_format_json_forward_stderr() {
         .build();
 
     p.cargo("rustc --release --bin foo --message-format JSON")
-        .with_json_contains_unordered(
-            r#"
-                {
-                    "reason":"compiler-message",
-                    "package_id":"path+file:///[..]/foo#0.5.0",
-                    "manifest_path": "[..]",
-                    "target":{
-                        "kind":["bin"],
-                        "crate_types":["bin"],
-                        "doc": true,
-                        "doctest": false,
-                        "edition": "2015",
-                        "name":"foo",
-                        "src_path":"[..]",
-                        "test": true
-                    },
-                    "message":"{...}"
-                }
-
-                {
-                    "reason":"compiler-artifact",
-                    "package_id":"path+file:///[..]/foo#0.5.0",
-                    "manifest_path": "[..]",
-                    "target":{
-                        "kind":["bin"],
-                        "crate_types":["bin"],
-                        "doc": true,
-                        "doctest": false,
-                        "edition": "2015",
-                        "name":"foo",
-                        "src_path":"[..]",
-                        "test": true
-                    },
-                    "profile":{
-                        "debug_assertions":false,
-                        "debuginfo":0,
-                        "opt_level":"3",
-                        "overflow_checks": false,
-                        "test":false
-                    },
-                    "executable": "{...}",
-                    "features":[],
-                    "filenames": "{...}",
-                    "fresh": false
-                }
-
-                {"reason": "build-finished", "success": true}
-            "#,
+        .with_stdout_data(
+            str![[r#"
+[
+  {
+    "manifest_path": "[ROOT]/foo/Cargo.toml",
+    "message": "{...}",
+    "package_id": "path+[ROOTURL]/foo#0.5.0",
+    "reason": "compiler-message",
+    "target": {
+      "kind": ["bin"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "features": [],
+    "fresh": false,
+    "manifest_path": "[ROOT]/foo/Cargo.toml",
+    "package_id": "path+[ROOTURL]/foo#0.5.0",
+    "reason": "compiler-artifact",
+    "target": {
+      "kind": ["bin"],
+      "...": "{...}"
+    },
+    "...": "{...}"
+  },
+  {
+    "reason": "build-finished",
+    "success": true
+  },
+  "{...}"
+]
+"#]]
+            .is_json()
+            .against_jsonlines()
+            .unordered(),
         )
         .run();
 }
@@ -4511,7 +4259,6 @@ fn build_all_workspace() {
 
     p.cargo("build --workspace")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4545,7 +4292,6 @@ fn build_all_exclude() {
     p.cargo("build --workspace --exclude baz")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 3 packages to latest compatible versions
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4617,7 +4363,6 @@ fn build_all_exclude_not_found() {
         .with_stderr_data(
             str![[r#"
 [WARNING] excluded package(s) `baz` not found in workspace `[ROOT]/foo`
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4653,7 +4398,6 @@ fn build_all_exclude_glob() {
     p.cargo("build --workspace --exclude '*z'")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 3 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4688,7 +4432,6 @@ fn build_all_exclude_glob_not_found() {
         .with_stderr_data(
             str![[r#"
 [WARNING] excluded package pattern(s) `*z` not found in workspace `[ROOT]/foo`
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4747,7 +4490,6 @@ fn build_all_workspace_implicit_examples() {
 
     p.cargo("build --workspace --examples")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4784,7 +4526,6 @@ fn build_all_virtual_manifest() {
     p.cargo("build --workspace")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4815,7 +4556,6 @@ fn build_virtual_manifest_all_implied() {
     p.cargo("build")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -4844,7 +4584,6 @@ fn build_virtual_manifest_one_project() {
 
     p.cargo("build -p bar")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -4870,7 +4609,6 @@ fn build_virtual_manifest_glob() {
 
     p.cargo("build -p '*z'")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -4955,7 +4693,6 @@ fn build_all_virtual_manifest_implicit_examples() {
     p.cargo("build --workspace --examples")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -5004,7 +4741,7 @@ fn build_all_member_dependency_same_name() {
     p.cargo("build --workspace")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] a v0.1.0 (registry `dummy-registry`)
 [COMPILING] a v0.1.0
@@ -5189,7 +4926,6 @@ WRAPPER CALLED: rustc --crate-name foo [..]
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn rustc_wrapper_queries() {
     // Check that the invocations querying rustc for information are done with the wrapper.
@@ -5240,7 +4976,7 @@ fn rustc_wrapper_relative() {
         .env("RUSTC_WRAPPER", &relative_path)
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
 [COMPILING] bar v1.0.0
@@ -5773,7 +5509,7 @@ fn building_a_dependent_crate_without_bin_should_fail() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] testless v0.1.0 (registry `dummy-registry`)
 [ERROR] failed to download replaced source registry `crates-io`
@@ -5929,7 +5665,6 @@ fn build_filter_infer_profile() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn targets_selected_default() {
     let p = project().file("src/main.rs", "fn main() {}").build();
@@ -6017,7 +5752,7 @@ fn no_linkable_target() {
         .build();
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [WARNING] The package `the_lib` provides no linkable target. The compiler might raise an error while compiling `foo`. Consider adding 'dylib' or 'rlib' to key `crate-type` in `the_lib`'s Cargo.toml. This warning might turn into a hard error in the future.
 [COMPILING] the_lib v0.1.0 ([ROOT]/foo/the_lib)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
@@ -6052,7 +5787,7 @@ fn avoid_dev_deps() {
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [ERROR] no matching package named `baz` found
-location searched: registry `crates-io`
+location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `bar v0.1.0 ([ROOT]/foo)`
 
 "#]])
@@ -6173,7 +5908,6 @@ fn target_filters_workspace() {
     ws.cargo("build -v --example ex")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [ERROR] no example target named `ex`
 
 	Did you mean `ex1`?
@@ -6235,7 +5969,6 @@ fn target_filters_workspace_not_found() {
     ws.cargo("build -v --lib")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [ERROR] no library targets found in packages: a, b
 
 "#]])
@@ -6295,7 +6028,7 @@ fn signal_display() {
 
     foo.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] pm v0.1.0 ([ROOT]/foo/pm)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [ERROR] could not compile `foo` (lib)
@@ -6353,7 +6086,7 @@ fn pipelining_works() {
     foo.cargo("build")
         .with_stdout_data(str![])
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -6418,7 +6151,6 @@ fn pipelining_big_graph() {
         .with_status(101)
         .with_stderr_data(
             str![[r#"
-[LOCKING] 61 packages to latest compatible versions
 [COMPILING] a30 v0.5.0 ([ROOT]/foo/a30)
 [ERROR] don't actually build me
 ...
@@ -6485,7 +6217,7 @@ b
 
 "#]])
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 c
@@ -6886,7 +6618,6 @@ Caused by:
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn build_script_o0_default() {
     let p = project()
@@ -6899,7 +6630,6 @@ fn build_script_o0_default() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn build_script_o0_default_even_with_release() {
     let p = project()

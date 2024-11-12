@@ -143,6 +143,9 @@ rpath = false            # Sets the rpath linking option.
 [profile.<name>.package.<name>]  # Override profile for a package.
 # Same keys for a normal profile (minus `panic`, `lto`, and `rpath`).
 
+[resolver]
+incompatible-rust-versions = "allow"  # Specifies how resolver reacts to these
+
 [registries.<name>]  # registries other than crates.io
 index = "…"          # URL of the registry index
 token = "…"          # authentication token for the registry
@@ -220,10 +223,14 @@ In addition to the system above, Cargo recognizes a few other specific
 
 Cargo also accepts arbitrary configuration overrides through the
 `--config` command-line option. The argument should be in TOML syntax of
-`KEY=VALUE`:
+`KEY=VALUE` or provided as a path to an extra configuration file:
 
 ```console
+# With `KEY=VALUE` in TOML syntax
 cargo --config net.git-fetch-with-cli=true fetch
+
+# With a path to a configuration file
+cargo --config ./path/to/my/extra-config.toml fetch
 ```
 
 The `--config` option may be specified multiple times, in which case the
@@ -231,6 +238,10 @@ values are merged in left-to-right order, using the same merging logic
 that is used when multiple configuration files apply. Configuration
 values specified this way take precedence over environment variables,
 which take precedence over configuration files.
+
+When the `--config` option is provided as an extra configuration file,
+The configuration file loaded this way follow the same precedence rules
+as other options specified directly with `--config`.
 
 Some examples of what it looks like using Bourne shell syntax:
 
@@ -250,11 +261,6 @@ cargo --config "target.'cfg(all(target_arch = \"arm\", target_os = \"none\"))'.r
 # Example of overriding a profile setting.
 cargo --config profile.dev.package.image.opt-level=3 …
 ```
-
-The `--config` option can also be used to pass paths to extra
-configuration files that Cargo should use for a specific invocation.
-Options from configuration files loaded this way follow the same
-precedence rules as other options specified directly with `--config`.
 
 ## Config-relative paths
 
@@ -551,7 +557,7 @@ overrides the config setting.
 * Environment: `CARGO_BUILD_DEP_INFO_BASEDIR`
 
 Strips the given path prefix from [dep
-info](../guide/build-cache.md#dep-info-files) file paths. This config setting
+info](../reference/build-cache.md#dep-info-files) file paths. This config setting
 is intended to convert absolute paths to relative paths for tools that require
 relative paths.
 
@@ -969,6 +975,30 @@ See [rpath](profiles.md#rpath).
 
 See [strip](profiles.md#strip).
 
+### `[resolver]`
+
+The `[resolver]` table overrides [dependency resolution behavior](resolver.md) for local development (e.g. excludes `cargo install`).
+
+#### `resolver.incompatible-rust-versions`
+* Type: string
+* Default: `"allow"`
+* Environment: `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS`
+
+When resolving which version of a dependency to use, select how versions with incompatible `package.rust-version`s are treated.
+Values include:
+- `allow`: treat `rust-version`-incompatible versions like any other version
+- `fallback`: only consider `rust-version`-incompatible versions if no other version matched
+
+Can be overridden with
+- `--ignore-rust-version` CLI option
+- Setting the dependency's version requirement higher than any version with a compatible `rust-version`
+- Specifying the version to `cargo update` with `--precise`
+
+See the [resolver](resolver.md#rust-version) chapter for more details.
+
+> **MSRV:**
+> - `allow` is supported on any version
+> - `fallback` is respected as of 1.84
 
 ### `[registries]`
 
@@ -1173,9 +1203,9 @@ rustflags = ["…", "…"]
 ```
 
 `cfg` values come from those built-in to the compiler (run `rustc --print=cfg`
-to view), values set by [build scripts], and extra `--cfg` flags passed to
-`rustc` (such as those defined in `RUSTFLAGS`). Do not try to match on
-`debug_assertions` or Cargo features like `feature="foo"`.
+to view) and extra `--cfg` flags passed to `rustc` (such as those defined in
+`RUSTFLAGS`). Do not try to match on `debug_assertions`, `test`, Cargo features
+like `feature="foo"`, or values set by [build scripts].
 
 If using a target spec JSON file, the [`<triple>`] value is the filename stem.
 For example `--target foo/bar.json` would match `[target.bar]`.

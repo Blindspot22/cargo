@@ -364,7 +364,7 @@ fn cargo_bench_failing_test() {
 
             #[bench]
             fn bench_hello(_b: &mut test::Bencher) {
-                assert_eq!(hello(), "nope")
+                assert_eq!(hello(), "nope", "NOPE!")
             }
             "#,
         )
@@ -389,28 +389,7 @@ hello
 [ERROR] bench failed, to rerun pass `--bin foo`
 
 "#]])
-        .with_stdout_data(str![[r#"
-
-running 1 test
-test bench_hello ... FAILED
-
-failures:
-
----- bench_hello stdout ----
-thread 'main' panicked at src/main.rs:15:17:
-assertion `left == right` failed
-  left: "hello"
- right: "nope"
-[NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-
-failures:
-    bench_hello
-
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-"#]])
+        .with_stdout_data("...\n[..]NOPE![..]\n...")
         .with_status(101)
         .run();
 }
@@ -543,7 +522,7 @@ fn bench_with_deep_lib_dep() {
 
     p.cargo("bench")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [COMPILING] bar v0.0.1 ([ROOT]/bar)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
@@ -1094,7 +1073,7 @@ fn bench_dylib() {
 
     p.cargo("bench -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] [..] -C opt-level=3 [..]
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -1439,7 +1418,7 @@ fn test_bench_no_fail_fast() {
 
             #[bench]
             fn bench_nope(_b: &mut test::Bencher) {
-                assert_eq!("nope", hello())
+                assert_eq!("nope", hello(), "NOPE!")
             }
             "#,
         )
@@ -1449,7 +1428,7 @@ fn test_bench_no_fail_fast() {
                 #![feature(test)]
                 extern crate test;
                 #[bench]
-                fn b1_fail(_b: &mut test::Bencher) { assert_eq!(1, 2); }
+                fn b1_fail(_b: &mut test::Bencher) { assert_eq!(1, 2, "ONE=TWO"); }
             "#,
         )
         .build();
@@ -1468,48 +1447,15 @@ fn test_bench_no_fail_fast() {
     `--bench b1`
 
 "#]])
-        .with_stdout_data(str![[r#"
-
-running 2 tests
-test bench_hello ... bench:           [AVG_ELAPSED] ns/iter (+/- [JITTER])
-test bench_nope  ... FAILED
-
-failures:
-
----- bench_nope stdout ----
-thread 'main' panicked at src/main.rs:20:17:
-assertion `left == right` failed
-  left: "nope"
- right: "hello"
-[NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-
-failures:
-    bench_nope
-
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 1 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-running 1 test
-test b1_fail ... FAILED
-
-failures:
-
----- b1_fail stdout ----
-thread 'main' panicked at benches/b1.rs:5:54:
-assertion `left == right` failed
-  left: 1
- right: 2
-[NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-
-failures:
-    b1_fail
-
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-"#]])
+        .with_stdout_data(
+            r#"
+...
+[..]NOPE![..]
+...
+[..]ONE=TWO[..]
+...
+"#,
+        )
         .run();
 }
 
@@ -1605,7 +1551,7 @@ fn test_bench_multiple_packages() {
 "#]])
         .with_stderr_data(
             str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/baz)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
@@ -1668,7 +1614,6 @@ fn bench_all_workspace() {
 
     p.cargo("bench --workspace")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
@@ -1860,7 +1805,6 @@ fn bench_all_virtual_manifest() {
     p.cargo("bench --workspace")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
@@ -1943,7 +1887,6 @@ fn bench_virtual_manifest_glob() {
     // This should not have `bar` built or benched
     p.cargo("bench -p '*z'")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
 [RUNNING] unittests src/lib.rs (target/release/deps/baz-[HASH][EXE])
@@ -2052,7 +1995,6 @@ fn bench_virtual_manifest_all_implied() {
     p.cargo("bench")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/foo/baz)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s

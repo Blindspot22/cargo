@@ -24,9 +24,7 @@ use crate::sources::{PathSource, SourceConfigMap, CRATES_IO_INDEX, CRATES_IO_REG
 use crate::util::edit_distance;
 use crate::util::errors::{CargoResult, ManifestError};
 use crate::util::interning::InternedString;
-use crate::util::lints::{
-    analyze_cargo_lints_table, check_im_a_teapot, check_implicit_features, unused_dependencies,
-};
+use crate::util::lints::{analyze_cargo_lints_table, check_im_a_teapot};
 use crate::util::toml::{read_manifest, InheritableFields};
 use crate::util::{
     context::CargoResolverConfig, context::ConfigRelativePath, context::IncompatibleRustVersions,
@@ -46,65 +44,73 @@ use pathdiff::diff_paths;
 /// package is loaded and/or learned about.
 #[derive(Debug)]
 pub struct Workspace<'gctx> {
+    /// Cargo configuration information. See [`GlobalContext`].
     gctx: &'gctx GlobalContext,
 
-    // This path is a path to where the current cargo subcommand was invoked
-    // from. That is the `--manifest-path` argument to Cargo, and
-    // points to the "main crate" that we're going to worry about.
+    /// This path is a path to where the current cargo subcommand was invoked
+    /// from. That is the `--manifest-path` argument to Cargo, and
+    /// points to the "main crate" that we're going to worry about.
     current_manifest: PathBuf,
 
-    // A list of packages found in this workspace. Always includes at least the
-    // package mentioned by `current_manifest`.
+    /// A list of packages found in this workspace. Always includes at least the
+    /// package mentioned by `current_manifest`.
     packages: Packages<'gctx>,
 
-    // If this workspace includes more than one crate, this points to the root
-    // of the workspace. This is `None` in the case that `[workspace]` is
-    // missing, `package.workspace` is missing, and no `Cargo.toml` above
-    // `current_manifest` was found on the filesystem with `[workspace]`.
+    /// If this workspace includes more than one crate, this points to the root
+    /// of the workspace. This is `None` in the case that `[workspace]` is
+    /// missing, `package.workspace` is missing, and no `Cargo.toml` above
+    /// `current_manifest` was found on the filesystem with `[workspace]`.
     root_manifest: Option<PathBuf>,
 
-    // Shared target directory for all the packages of this workspace.
-    // `None` if the default path of `root/target` should be used.
+    /// Shared target directory for all the packages of this workspace.
+    /// `None` if the default path of `root/target` should be used.
     target_dir: Option<Filesystem>,
 
-    // List of members in this workspace with a listing of all their manifest
-    // paths. The packages themselves can be looked up through the `packages`
-    // set above.
+    /// List of members in this workspace with a listing of all their manifest
+    /// paths. The packages themselves can be looked up through the `packages`
+    /// set above.
     members: Vec<PathBuf>,
+    /// Set of ids of workspace members
     member_ids: HashSet<PackageId>,
 
-    // The subset of `members` that are used by the
-    // `build`, `check`, `test`, and `bench` subcommands
-    // when no package is selected with `--package` / `-p` and `--workspace`
-    // is not used.
-    //
-    // This is set by the `default-members` config
-    // in the `[workspace]` section.
-    // When unset, this is the same as `members` for virtual workspaces
-    // (`--workspace` is implied)
-    // or only the root package for non-virtual workspaces.
+    /// The subset of `members` that are used by the
+    /// `build`, `check`, `test`, and `bench` subcommands
+    /// when no package is selected with `--package` / `-p` and `--workspace`
+    /// is not used.
+    ///
+    /// This is set by the `default-members` config
+    /// in the `[workspace]` section.
+    /// When unset, this is the same as `members` for virtual workspaces
+    /// (`--workspace` is implied)
+    /// or only the root package for non-virtual workspaces.
     default_members: Vec<PathBuf>,
 
-    // `true` if this is a temporary workspace created for the purposes of the
-    // `cargo install` or `cargo package` commands.
+    /// `true` if this is a temporary workspace created for the purposes of the
+    /// `cargo install` or `cargo package` commands.
     is_ephemeral: bool,
 
-    // `true` if this workspace should enforce optional dependencies even when
-    // not needed; false if this workspace should only enforce dependencies
-    // needed by the current configuration (such as in cargo install). In some
-    // cases `false` also results in the non-enforcement of dev-dependencies.
+    /// `true` if this workspace should enforce optional dependencies even when
+    /// not needed; false if this workspace should only enforce dependencies
+    /// needed by the current configuration (such as in cargo install). In some
+    /// cases `false` also results in the non-enforcement of dev-dependencies.
     require_optional_deps: bool,
 
-    // A cache of loaded packages for particular paths which is disjoint from
-    // `packages` up above, used in the `load` method down below.
+    /// A cache of loaded packages for particular paths which is disjoint from
+    /// `packages` up above, used in the `load` method down below.
     loaded_packages: RefCell<HashMap<PathBuf, Package>>,
 
-    // If `true`, then the resolver will ignore any existing `Cargo.lock`
-    // file. This is set for `cargo install` without `--locked`.
+    /// If `true`, then the resolver will ignore any existing `Cargo.lock`
+    /// file. This is set for `cargo install` without `--locked`.
     ignore_lock: bool,
+
+    /// Requested path of the lockfile (i.e. passed as the cli flag)
+    requested_lockfile_path: Option<PathBuf>,
 
     /// The resolver behavior specified with the `resolver` field.
     resolve_behavior: ResolveBehavior,
+    /// If `true`, then workspace `rust_version` would be used in `cargo resolve`
+    /// and other places that use rust version.
+    /// This is set based on the resolver version, config settings, and CLI flags.
     resolve_honors_rust_version: bool,
 
     /// Workspace-level custom metadata
@@ -237,6 +243,7 @@ impl<'gctx> Workspace<'gctx> {
             require_optional_deps: true,
             loaded_packages: RefCell::new(HashMap::new()),
             ignore_lock: false,
+            requested_lockfile_path: None,
             resolve_behavior: ResolveBehavior::V1,
             resolve_honors_rust_version: false,
             custom_metadata: None,
@@ -299,31 +306,12 @@ impl<'gctx> Workspace<'gctx> {
                 }
             }
         }
-        match self.gctx().get::<CargoResolverConfig>("resolver") {
-            Ok(CargoResolverConfig {
-                incompatible_rust_versions: Some(incompatible_rust_versions),
-            }) => {
-                if self.gctx().cli_unstable().msrv_policy {
-                    self.resolve_honors_rust_version =
-                        incompatible_rust_versions == IncompatibleRustVersions::Fallback;
-                } else {
-                    self.gctx()
-                        .shell()
-                        .warn("ignoring `resolver` config table without `-Zmsrv-policy`")?;
-                }
-            }
-            Ok(CargoResolverConfig {
-                incompatible_rust_versions: None,
-            }) => {}
-            Err(err) => {
-                if self.gctx().cli_unstable().msrv_policy {
-                    return Err(err);
-                } else {
-                    self.gctx()
-                        .shell()
-                        .warn("ignoring `resolver` config table without `-Zmsrv-policy`")?;
-                }
-            }
+        if let CargoResolverConfig {
+            incompatible_rust_versions: Some(incompatible_rust_versions),
+        } = self.gctx().get::<CargoResolverConfig>("resolver")?
+        {
+            self.resolve_honors_rust_version =
+                incompatible_rust_versions == IncompatibleRustVersions::Fallback;
         }
 
         Ok(())
@@ -568,7 +556,7 @@ impl<'gctx> Workspace<'gctx> {
     }
 
     /// Returns an iterator over default packages in this workspace
-    pub fn default_members<'a>(&'a self) -> impl Iterator<Item = &Package> {
+    pub fn default_members<'a>(&'a self) -> impl Iterator<Item = &'a Package> {
         let packages = &self.packages;
         self.default_members
             .iter()
@@ -628,9 +616,38 @@ impl<'gctx> Workspace<'gctx> {
         self
     }
 
+    /// Returns the directory where the lockfile is in.
+    pub fn lock_root(&self) -> Filesystem {
+        if let Some(requested) = self.requested_lockfile_path.as_ref() {
+            return Filesystem::new(
+                requested
+                    .parent()
+                    .expect("Lockfile path can't be root")
+                    .to_owned(),
+            );
+        }
+        self.default_lock_root()
+    }
+
+    fn default_lock_root(&self) -> Filesystem {
+        if self.root_maybe().is_embedded() {
+            self.target_dir()
+        } else {
+            Filesystem::new(self.root().to_owned())
+        }
+    }
+
+    pub fn set_requested_lockfile_path(&mut self, path: Option<PathBuf>) {
+        self.requested_lockfile_path = path;
+    }
+
+    pub fn requested_lockfile_path(&self) -> Option<&Path> {
+        self.requested_lockfile_path.as_deref()
+    }
+
     /// Get the lowest-common denominator `package.rust-version` within the workspace, if specified
     /// anywhere
-    pub fn rust_version(&self) -> Option<&RustVersion> {
+    pub fn lowest_rust_version(&self) -> Option<&RustVersion> {
         self.members().filter_map(|pkg| pkg.rust_version()).min()
     }
 
@@ -1202,8 +1219,6 @@ impl<'gctx> Workspace<'gctx> {
             self.gctx,
         )?;
         check_im_a_teapot(pkg, &path, &cargo_lints, &mut error_count, self.gctx)?;
-        check_implicit_features(pkg, &path, &cargo_lints, &mut error_count, self.gctx)?;
-        unused_dependencies(pkg, &path, &cargo_lints, &mut error_count, self.gctx)?;
         if error_count > 0 {
             Err(crate::util::errors::AlreadyPrintedError::new(anyhow!(
                 "encountered {error_count} errors(s) while running lints"
@@ -1329,12 +1344,12 @@ impl<'gctx> Workspace<'gctx> {
         }
     }
 
-    fn report_unknown_features_error(
+    fn missing_feature_spelling_suggestions(
         &self,
-        specs: &[PackageIdSpec],
+        selected_members: &[&Package],
         cli_features: &CliFeatures,
         found_features: &BTreeSet<FeatureValue>,
-    ) -> CargoResult<()> {
+    ) -> Vec<String> {
         // Keeps track of which features were contained in summary of `member` to suggest similar features in errors
         let mut summary_features: Vec<InternedString> = Default::default();
 
@@ -1353,10 +1368,7 @@ impl<'gctx> Workspace<'gctx> {
         let mut optional_dependency_names_per_member: BTreeMap<&Package, BTreeSet<InternedString>> =
             Default::default();
 
-        for member in self
-            .members()
-            .filter(|m| specs.iter().any(|spec| spec.matches(m.package_id())))
-        {
+        for &member in selected_members {
             // Only include features this member defines.
             let summary = member.summary();
 
@@ -1394,7 +1406,7 @@ impl<'gctx> Workspace<'gctx> {
             edit_distance(a.as_str(), b.as_str(), 3).is_some()
         };
 
-        let suggestions: Vec<_> = cli_features
+        cli_features
             .features
             .difference(found_features)
             .map(|feature| match feature {
@@ -1488,8 +1500,15 @@ impl<'gctx> Workspace<'gctx> {
             })
             .sorted()
             .take(5)
-            .collect();
+            .collect()
+    }
 
+    fn report_unknown_features_error(
+        &self,
+        specs: &[PackageIdSpec],
+        cli_features: &CliFeatures,
+        found_features: &BTreeSet<FeatureValue>,
+    ) -> CargoResult<()> {
         let unknown: Vec<_> = cli_features
             .features
             .difference(found_features)
@@ -1497,18 +1516,70 @@ impl<'gctx> Workspace<'gctx> {
             .sorted()
             .collect();
 
-        if suggestions.is_empty() {
-            bail!(
-                "none of the selected packages contains these features: {}",
-                unknown.join(", ")
-            );
+        let (selected_members, unselected_members): (Vec<_>, Vec<_>) = self
+            .members()
+            .partition(|member| specs.iter().any(|spec| spec.matches(member.package_id())));
+
+        let missing_packages_with_the_features = unselected_members
+            .into_iter()
+            .filter(|member| {
+                unknown
+                    .iter()
+                    .any(|feature| member.summary().features().contains_key(&**feature))
+            })
+            .map(|m| m.name())
+            .collect_vec();
+
+        let these_features = if unknown.len() == 1 {
+            "this feature"
         } else {
-            bail!(
-                "none of the selected packages contains these features: {}, did you mean: {}?",
-                unknown.join(", "),
-                suggestions.join(", ")
+            "these features"
+        };
+        let mut msg = if let [singular] = &selected_members[..] {
+            format!(
+                "the package '{}' does not contain {these_features}: {}",
+                singular.name(),
+                unknown.join(", ")
+            )
+        } else {
+            let names = selected_members.iter().map(|m| m.name()).join(", ");
+            format!("none of the selected packages contains {these_features}: {}\nselected packages: {names}", unknown.join(", "))
+        };
+
+        use std::fmt::Write;
+        if !missing_packages_with_the_features.is_empty() {
+            write!(
+                &mut msg,
+                "\nhelp: package{} with the missing feature{}: {}",
+                if missing_packages_with_the_features.len() != 1 {
+                    "s"
+                } else {
+                    ""
+                },
+                if unknown.len() != 1 { "s" } else { "" },
+                missing_packages_with_the_features.join(", ")
+            )?;
+        } else {
+            let suggestions = self.missing_feature_spelling_suggestions(
+                &selected_members,
+                cli_features,
+                found_features,
             );
+            if !suggestions.is_empty() {
+                write!(
+                    &mut msg,
+                    "\nhelp: there {}: {}",
+                    if suggestions.len() == 1 {
+                        "is a similarly named feature"
+                    } else {
+                        "are similarly named features"
+                    },
+                    suggestions.join(", ")
+                )?;
+            }
         }
+
+        bail!("{msg}")
     }
 
     /// New command-line feature selection behavior with resolver = "2" or the

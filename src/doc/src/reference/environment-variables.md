@@ -226,6 +226,7 @@ corresponding environment variable is set to the empty string, `""`.
 
 * `CARGO` --- Path to the `cargo` binary performing the build.
 * `CARGO_MANIFEST_DIR` --- The directory containing the manifest of your package.
+* `CARGO_MANIFEST_PATH` --- The path to the manifest of your package.
 * `CARGO_PKG_VERSION` --- The full version of your package.
 * `CARGO_PKG_VERSION_MAJOR` --- The major version of your package.
 * `CARGO_PKG_VERSION_MINOR` --- The minor version of your package.
@@ -259,15 +260,15 @@ corresponding environment variable is set to the empty string, `""`.
 * `CARGO_PRIMARY_PACKAGE` --- This environment variable will be set if the
   package being built is primary. Primary packages are the ones the user
   selected on the command-line, either with `-p` flags or the defaults based
-  on the current directory and the default workspace members. This environment
-  variable will not be set when building dependencies. This is only set when
-  compiling the package (not when running binaries or tests).
+  on the current directory and the default workspace members.
+  This variable will not be set when building dependencies,
+  unless a dependency is also a workspace member that was also selected on the command-line.
+  This is only set when compiling the package (not when running binaries or tests).
 * `CARGO_TARGET_TMPDIR` --- Only set when building [integration test] or benchmark code.
   This is a path to a directory inside the target directory
   where integration tests or benchmarks are free to put any data needed by
   the tests/benches. Cargo initially creates this directory but doesn't
   manage its content in any way, this is the responsibility of the test code.
-* `CARGO_RUSTC_CURRENT_DIR` --- This is a path that `rustc` is invoked from **(nightly only)**.
 
 [Cargo target]: cargo-targets.md
 [binaries]: cargo-targets.md#binaries
@@ -320,6 +321,7 @@ let out_dir = env::var("OUT_DIR").unwrap();
 * `CARGO_MANIFEST_DIR` --- The directory containing the manifest for the package
   being built (the package containing the build script). Also note that this is
   the value of the current working directory of the build script when it starts.
+* `CARGO_MANIFEST_PATH` --- The path to the manifest of your package.
 * `CARGO_MANIFEST_LINKS` --- the manifest `links` value.
 * `CARGO_MAKEFLAGS` --- Contains parameters needed for Cargo's [jobserver]
   implementation to parallelize subprocesses. Rustc or cargo invocations from
@@ -353,6 +355,9 @@ let out_dir = env::var("OUT_DIR").unwrap();
     * `CARGO_CFG_TARGET_FEATURE=mmx,sse` --- List of CPU [target features] enabled.
   > Note that different [target triples][Target Triple] have different sets of `cfg` values,
   > hence variables present in one target triple might not be available in the other.
+  >
+  > Some cfg values like `debug_assertions`, `test`, and Cargo features like
+  > `feature="foo"` are not available.
 * `OUT_DIR` --- the folder in which all output and intermediate artifacts should
   be placed. This folder is inside the build directory for the package being built,
   and it is unique for the package in question.

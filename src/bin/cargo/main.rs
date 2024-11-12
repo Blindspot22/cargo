@@ -1,5 +1,6 @@
 #![allow(clippy::self_named_module_files)] // false positive in `commands/build.rs`
 
+use cargo::core::features;
 use cargo::core::shell::Shell;
 use cargo::util::network::http::http_handle;
 use cargo::util::network::http::needs_custom_http_transport;
@@ -27,6 +28,27 @@ fn main() {
             cargo::exit_with_error(e.into(), &mut shell)
         }
     };
+
+    let nightly_features_allowed = matches!(&*features::channel(), "nightly" | "dev");
+    if nightly_features_allowed {
+        let _span = tracing::span!(tracing::Level::TRACE, "completions").entered();
+        let args = std::env::args_os();
+        let current_dir = std::env::current_dir().ok();
+        let completer = clap_complete::CompleteEnv::with_factory(|| {
+            let mut gctx = GlobalContext::default().expect("already loaded without errors");
+            cli::cli(&mut gctx)
+        })
+        .var("CARGO_COMPLETE");
+        if completer
+            .try_complete(args, current_dir.as_deref())
+            .unwrap_or_else(|e| {
+                let mut shell = Shell::new();
+                cargo::exit_with_error(e.into(), &mut shell)
+            })
+        {
+            return;
+        }
+    }
 
     let result = if let Some(lock_addr) = cargo::ops::fix_get_proxy_lock_addr() {
         cargo::ops::fix_exec_rustc(&gctx, &lock_addr).map_err(|e| CliError::from(e))

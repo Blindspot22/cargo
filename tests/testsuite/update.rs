@@ -406,7 +406,6 @@ fn update_precise() {
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [DOWNGRADING] serde v0.2.1 -> v0.2.0
-[NOTE] pass `--verbose` to see 1 unchanged dependencies behind latest
 
 "#]])
         .run();
@@ -457,7 +456,7 @@ perhaps a crate was updated and forgotten to be re-vendored?
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [ERROR] no matching package named `serde` found
-location searched: registry `crates-io`
+location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `bar v0.0.1 ([ROOT]/foo)`
 
 "#]])
@@ -998,7 +997,7 @@ Caused by:
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [ERROR] no matching package named `bar` found
-location searched: registry `crates-io`
+location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `foo v0.1.0 ([ROOT]/foo)`
 
 "#]])
@@ -1018,7 +1017,7 @@ required by package `foo v0.1.0 ([ROOT]/foo)`
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [ERROR] no matching package named `bar` found
-location searched: registry `crates-io`
+location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `foo v0.1.0 ([ROOT]/foo)`
 
 "#]])
@@ -1100,7 +1099,7 @@ rustdns.workspace = true
     p.cargo("generate-lockfile")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/rustdns`
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 
 "#]])
         .run();
@@ -1190,7 +1189,7 @@ rustdns.workspace = true
     p.cargo("generate-lockfile")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/rustdns`
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 
 "#]])
         .run();
@@ -1280,7 +1279,7 @@ rustdns.workspace = true
     p.cargo("generate-lockfile")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/rustdns`
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 
 "#]])
         .run();
@@ -1340,7 +1339,7 @@ fn update_precise_git_revisions() {
     p.cargo("fetch")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/git`
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 
 "#]])
         .run();
@@ -1522,7 +1521,7 @@ fn report_behind() {
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [LOCKING] 1 package to latest compatible version
-[UPDATING] breaking v0.1.0 -> v0.1.1 (latest: v0.2.0)
+[UPDATING] breaking v0.1.0 -> v0.1.1 (available: v0.2.0)
 [NOTE] pass `--verbose` to see 2 unchanged dependencies behind latest
 [WARNING] not updating lockfile due to dry run
 
@@ -1533,9 +1532,9 @@ fn report_behind() {
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [LOCKING] 1 package to latest compatible version
-[UPDATING] breaking v0.1.0 -> v0.1.1 (latest: v0.2.0)
-[UNCHANGED] pre v1.0.0-alpha.0 (latest: v1.0.0-alpha.1)
-[UNCHANGED] two-ver v0.1.0 (latest: v0.2.0)
+[UPDATING] breaking v0.1.0 -> v0.1.1 (available: v0.2.0)
+[UNCHANGED] pre v1.0.0-alpha.0 (available: v1.0.0-alpha.1)
+[UNCHANGED] two-ver v0.1.0 (available: v0.2.0)
 [NOTE] to see how you depend on a package, run `cargo tree --invert --package <dep>@<ver>`
 [WARNING] not updating lockfile due to dry run
 
@@ -1558,9 +1557,9 @@ fn report_behind() {
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [LOCKING] 0 packages to latest compatible versions
-[UNCHANGED] breaking v0.1.1 (latest: v0.2.0)
-[UNCHANGED] pre v1.0.0-alpha.0 (latest: v1.0.0-alpha.1)
-[UNCHANGED] two-ver v0.1.0 (latest: v0.2.0)
+[UNCHANGED] breaking v0.1.1 (available: v0.2.0)
+[UNCHANGED] pre v1.0.0-alpha.0 (available: v1.0.0-alpha.1)
+[UNCHANGED] two-ver v0.1.0 (available: v0.2.0)
 [NOTE] to see how you depend on a package, run `cargo tree --invert --package <dep>@<ver>`
 [WARNING] not updating lockfile due to dry run
 
@@ -2008,8 +2007,8 @@ fn update_breaking() {
 [LOCKING] 4 packages to latest compatible versions
 [UPDATING] compatible v1.0.0 -> v1.0.1
 [UPDATING] less-than v1.0.0 -> v2.0.0
-[UPDATING] pinned v1.0.0 -> v1.0.1 (latest: v2.0.0)
-[UPDATING] renamed-from v1.0.0 -> v1.0.1 (latest: v2.0.0)
+[UPDATING] pinned v1.0.0 -> v1.0.1 (available: v2.0.0)
+[UPDATING] renamed-from v1.0.0 -> v1.0.1 (available: v2.0.0)
 
 "#]])
         .run();
@@ -2180,10 +2179,10 @@ fn update_breaking_specific_packages_that_wont_update() {
 [UPDATING] `[..]` index
 [LOCKING] 5 packages to latest compatible versions
 [UPDATING] compatible v1.0.0 -> v1.0.1
-[UPDATING] non-semver v1.0.0 -> v1.0.1 (latest: v2.0.0)
-[UPDATING] renamed-from v1.0.0 -> v1.0.1 (latest: v2.0.0)
+[UPDATING] non-semver v1.0.0 -> v1.0.1 (available: v2.0.0)
+[UPDATING] renamed-from v1.0.0 -> v1.0.1 (available: v2.0.0)
 [UPDATING] transitive-compatible v1.0.0 -> v1.0.1
-[UPDATING] transitive-incompatible v1.0.0 -> v1.0.1 (latest: v2.0.0)
+[UPDATING] transitive-incompatible v1.0.0 -> v1.0.1
 
 "#]])
     .run();
@@ -2222,7 +2221,7 @@ fn update_breaking_without_lock_file() {
         .with_stderr_data(str![[r#"
 [UPDATING] `[..]` index
 [UPGRADING] incompatible ^1.0 -> ^2.0
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 
 "#]])
         .run();
@@ -2397,7 +2396,7 @@ fn update_breaking_spec_version_transitive() {
         .with_stderr_data(str![[r#"
 [UPDATING] `[..]` index
 [LOCKING] 1 package to latest compatible version
-[UPDATING] dep v1.1.0 -> v1.1.1 (latest: v2.0.0)
+[UPDATING] dep v1.1.0 -> v1.1.1
 
 "#]])
         .run();

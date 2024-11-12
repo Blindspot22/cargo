@@ -69,6 +69,7 @@ pub fn cli() -> Command {
         )
         .arg(opt("root", "Directory to install packages into").value_name("DIR"))
         .arg(flag("force", "Force overwriting existing crates or binaries").short('f'))
+        .arg_dry_run("Perform all checks without installing (unstable)")
         .arg(flag("no-track", "Do not save tracking information"))
         .arg(flag(
             "list",
@@ -97,6 +98,7 @@ pub fn cli() -> Command {
         .arg_target_triple("Build for the target triple")
         .arg_target_dir()
         .arg_timings()
+        .arg_lockfile_path()
         .after_help(color_print::cstr!(
             "Run `<cyan,bold>cargo help install</>` for more detailed information.\n"
         ))
@@ -200,6 +202,15 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
     compile_opts.build_config.requested_profile =
         args.get_profile_name("release", ProfileChecking::Custom)?;
+    if args.dry_run() {
+        gctx.cli_unstable().fail_if_stable_opt("--dry-run", 11123)?;
+    }
+
+    let requested_lockfile_path = args.lockfile_path(gctx)?;
+    // 14421: lockfile path should imply --locked on running `install`
+    if requested_lockfile_path.is_some() {
+        gctx.set_locked(true);
+    }
 
     if args.flag("list") {
         ops::install_list(root, gctx)?;
@@ -213,6 +224,8 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             &compile_opts,
             args.flag("force"),
             args.flag("no-track"),
+            args.dry_run(),
+            requested_lockfile_path.as_deref(),
         )?;
     }
     Ok(())

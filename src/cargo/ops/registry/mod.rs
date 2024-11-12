@@ -2,6 +2,7 @@
 //!
 //! [1]: https://doc.rust-lang.org/nightly/cargo/reference/registry-web-api.html
 
+mod info;
 mod login;
 mod logout;
 mod owner;
@@ -18,7 +19,7 @@ use cargo_credential::{Operation, Secret};
 use crates_io::Registry;
 use url::Url;
 
-use crate::core::SourceId;
+use crate::core::{Package, PackageId, SourceId};
 use crate::sources::source::Source;
 use crate::sources::{RegistrySource, SourceConfigMap};
 use crate::util::auth;
@@ -27,6 +28,7 @@ use crate::util::context::{GlobalContext, PathAndArgs};
 use crate::util::errors::CargoResult;
 use crate::util::network::http::http_handle;
 
+pub use self::info::info;
 pub use self::login::registry_login;
 pub use self::logout::registry_logout;
 pub use self::owner::modify_owners;
@@ -118,14 +120,14 @@ impl RegistryCredentialConfig {
 ///   `registry`, or `index` are set, then uses `crates-io`.
 /// * `force_update`: If `true`, forces the index to be updated.
 /// * `token_required`: If `true`, the token will be set.
-fn registry(
-    gctx: &GlobalContext,
+fn registry<'gctx>(
+    gctx: &'gctx GlobalContext,
     source_ids: &RegistrySourceIds,
     token_from_cmdline: Option<Secret<&str>>,
     reg_or_index: Option<&RegistryOrIndex>,
     force_update: bool,
     token_required: Option<Operation<'_>>,
-) -> CargoResult<Registry> {
+) -> CargoResult<(Registry, RegistrySource<'gctx>)> {
     let is_index = reg_or_index.map(|v| v.is_index()).unwrap_or_default();
     if is_index && token_required.is_some() && token_from_cmdline.is_none() {
         bail!("command-line argument --index requires --token to be specified");
@@ -134,9 +136,9 @@ fn registry(
         auth::cache_token_from_commandline(gctx, &source_ids.original, token);
     }
 
+    let mut src = RegistrySource::remote(source_ids.replacement, &HashSet::new(), gctx)?;
     let cfg = {
         let _lock = gctx.acquire_package_cache_lock(CacheLockMode::DownloadExclusive)?;
-        let mut src = RegistrySource::remote(source_ids.replacement, &HashSet::new(), gctx)?;
         // Only update the index if `force_update` is set.
         if force_update {
             src.invalidate_cache()
@@ -168,11 +170,9 @@ fn registry(
         None
     };
     let handle = http_handle(gctx)?;
-    Ok(Registry::new_handle(
-        api_host,
-        token,
-        handle,
-        cfg.auth_required,
+    Ok((
+        Registry::new_handle(api_host, token, handle, cfg.auth_required),
+        src,
     ))
 }
 
@@ -189,7 +189,7 @@ fn registry(
 ///
 /// The return value is a pair of `SourceId`s: The first may be a built-in replacement of
 /// crates.io (such as index.crates.io), while the second is always the original source.
-fn get_source_id(
+pub(crate) fn get_source_id(
     gctx: &GlobalContext,
     reg_or_index: Option<&RegistryOrIndex>,
 ) -> CargoResult<RegistrySourceIds> {
@@ -203,6 +203,47 @@ fn get_source_id(
             original: sid,
             replacement: builtin_replacement_sid,
         })
+    }
+}
+
+/// Very similar to [`get_source_id`], but is used when the `package_id` is known.
+fn get_source_id_with_package_id(
+    gctx: &GlobalContext,
+    package_id: Option<PackageId>,
+    reg_or_index: Option<&RegistryOrIndex>,
+) -> CargoResult<(bool, RegistrySourceIds)> {
+    let (use_package_source_id, sid) = match (&reg_or_index, package_id) {
+        (None, Some(package_id)) => (true, package_id.source_id()),
+        (None, None) => (false, SourceId::crates_io(gctx)?),
+        (Some(RegistryOrIndex::Index(url)), None) => (false, SourceId::for_registry(url)?),
+        (Some(RegistryOrIndex::Registry(r)), None) => (false, SourceId::alt_registry(gctx, r)?),
+        (Some(reg_or_index), Some(package_id)) => {
+            let sid = get_initial_source_id_from_registry_or_index(gctx, reg_or_index)?;
+            let package_source_id = package_id.source_id();
+            // 1. Same registry, use the package's source.
+            // 2. Use the package's source if the specified registry is a replacement for the package's source.
+            if sid == package_source_id
+                || is_replacement_for_package_source(gctx, sid, package_source_id)?
+            {
+                (true, package_source_id)
+            } else {
+                (false, sid)
+            }
+        }
+    };
+
+    let (builtin_replacement_sid, replacement_sid) = get_replacement_source_ids(gctx, sid)?;
+
+    if reg_or_index.is_none() && replacement_sid != builtin_replacement_sid {
+        bail!(gen_replacement_error(replacement_sid));
+    } else {
+        Ok((
+            use_package_source_id,
+            RegistrySourceIds {
+                original: sid,
+                replacement: builtin_replacement_sid,
+            },
+        ))
     }
 }
 
@@ -239,6 +280,17 @@ fn get_replacement_source_ids(
     Ok((builtin_replacement_sid, replacement_sid))
 }
 
+fn is_replacement_for_package_source(
+    gctx: &GlobalContext,
+    sid: SourceId,
+    package_source_id: SourceId,
+) -> CargoResult<bool> {
+    let pkg_source_replacement_sid = SourceConfigMap::new(gctx)?
+        .load(package_source_id, &HashSet::new())?
+        .replaced_source_id();
+    Ok(pkg_source_replacement_sid == sid)
+}
+
 fn gen_replacement_error(replacement_sid: SourceId) -> String {
     // Neither --registry nor --index was passed and the user has configured source-replacement.
     let error_message = if let Some(replacement_name) = replacement_sid.alt_registry_key() {
@@ -267,4 +319,53 @@ pub(crate) struct RegistrySourceIds {
     ///
     /// User-defined source replacement is not applied.
     pub(crate) replacement: SourceId,
+}
+
+/// If this set of packages has an unambiguous publish registry, find it.
+pub(crate) fn infer_registry(pkgs: &[&Package]) -> CargoResult<Option<RegistryOrIndex>> {
+    // Ignore "publish = false" packages while inferring the registry.
+    let publishable_pkgs: Vec<_> = pkgs
+        .iter()
+        .filter(|p| p.publish() != &Some(Vec::new()))
+        .collect();
+
+    let Some((first, rest)) = publishable_pkgs.split_first() else {
+        return Ok(None);
+    };
+
+    // If all packages have the same publish settings, we take that as the default.
+    if rest.iter().all(|p| p.publish() == first.publish()) {
+        match publishable_pkgs[0].publish().as_deref() {
+            Some([unique_pkg_reg]) => {
+                Ok(Some(RegistryOrIndex::Registry(unique_pkg_reg.to_owned())))
+            }
+            None | Some([]) => Ok(None),
+            Some(regs) => {
+                let mut regs: Vec<_> = regs.iter().map(|s| format!("\"{}\"", s)).collect();
+                regs.sort();
+                regs.dedup();
+                // unwrap: the match block ensures that there's more than one reg.
+                let (last_reg, regs) = regs.split_last().unwrap();
+                bail!(
+                    "--registry is required to disambiguate between {} or {} registries",
+                    regs.join(", "),
+                    last_reg
+                )
+            }
+        }
+    } else {
+        let common_regs = publishable_pkgs
+            .iter()
+            // `None` means "all registries", so drop them instead of including them
+            // in the intersection.
+            .filter_map(|p| p.publish().as_deref())
+            .map(|p| p.iter().collect::<HashSet<_>>())
+            .reduce(|xs, ys| xs.intersection(&ys).cloned().collect())
+            .unwrap_or_default();
+        if common_regs.is_empty() {
+            bail!("conflicts between `package.publish` fields in the selected packages");
+        } else {
+            bail!("--registry is required because not all `package.publish` settings agree",);
+        }
+    }
 }

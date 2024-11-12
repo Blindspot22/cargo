@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::io::SeekFrom;
@@ -13,8 +13,10 @@ use crate::core::resolver::CliFeatures;
 use crate::core::resolver::HasDevUnits;
 use crate::core::{Feature, PackageIdSpecQuery, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, SourceId};
+use crate::ops::lockfile::LOCKFILE_NAME;
+use crate::ops::registry::{infer_registry, RegistryOrIndex};
 use crate::sources::registry::index::{IndexPackage, RegistryDependency};
-use crate::sources::{PathSource, SourceConfigMap, CRATES_IO_REGISTRY};
+use crate::sources::{PathSource, CRATES_IO_REGISTRY};
 use crate::util::cache_lock::CacheLockMode;
 use crate::util::context::JobsConfig;
 use crate::util::errors::CargoResult;
@@ -31,8 +33,6 @@ use serde::Serialize;
 use tar::{Archive, Builder, EntryType, Header, HeaderMode};
 use tracing::debug;
 use unicase::Ascii as UncasedAscii;
-
-use super::RegistryOrIndex;
 
 #[derive(Clone)]
 pub struct PackageOpts<'gctx> {
@@ -93,30 +93,6 @@ struct GitVcsInfo {
     dirty: bool,
 }
 
-/// Packages a single package in a workspace, returning the resulting tar file.
-///
-/// # Panics
-/// Panics if `opts.list` is true. In that case you probably don't want to
-/// actually build the package tarball; you should just make and print the list
-/// of files. (We don't currently provide a public API for that, but see how
-/// [`package`] does it.)
-pub fn package_one(
-    ws: &Workspace<'_>,
-    pkg: &Package,
-    opts: &PackageOpts<'_>,
-) -> CargoResult<FileLock> {
-    assert!(!opts.list);
-
-    let ar_files = prepare_archive(ws, pkg, opts)?;
-    let tarball = create_package(ws, pkg, ar_files, None)?;
-
-    if opts.verify {
-        run_verify(ws, pkg, &tarball, None, opts)?;
-    }
-
-    Ok(tarball)
-}
-
 // Builds a tarball and places it in the output directory.
 fn create_package(
     ws: &Workspace<'_>,
@@ -147,13 +123,13 @@ fn create_package(
         .status("Packaging", pkg.package_id().to_string())?;
     dst.file().set_len(0)?;
     let uncompressed_size = tar(ws, pkg, local_reg, ar_files, dst.file(), &filename)
-        .with_context(|| "failed to prepare local package for uploading")?;
+        .context("failed to prepare local package for uploading")?;
 
     dst.seek(SeekFrom::Start(0))?;
     let src_path = dst.path();
     let dst_path = dst.parent().join(&filename);
     fs::rename(&src_path, &dst_path)
-        .with_context(|| "failed to move temporary tarball into final location")?;
+        .context("failed to move temporary tarball into final location")?;
 
     let dst_metadata = dst
         .file()
@@ -174,65 +150,6 @@ fn create_package(
     return Ok(dst);
 }
 
-/// Determine which registry the packages are for.
-///
-/// The registry only affects the built packages if there are dependencies within the
-/// packages that we're packaging: if we're packaging foo-bin and foo-lib, and foo-bin
-/// depends on foo-lib, then the foo-lib entry in foo-bin's lockfile will depend on the
-/// registry that we're building packages for.
-fn infer_registry(
-    gctx: &GlobalContext,
-    pkgs: &[&Package],
-    reg_or_index: Option<RegistryOrIndex>,
-) -> CargoResult<SourceId> {
-    let publish_registry = if let Some(RegistryOrIndex::Registry(registry)) = reg_or_index.as_ref()
-    {
-        Some(registry.clone())
-    } else if let Some([first_pkg_reg]) = pkgs[0].publish().as_deref() {
-        // If no registry is specified in the command, but all of the packages
-        // to publish have the same, unique allowed registry, push to that one.
-        if pkgs[1..].iter().all(|p| p.publish() == pkgs[0].publish()) {
-            Some(first_pkg_reg.clone())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Validate the registry against the packages' allow-lists. For backwards compatibility, we
-    // skip this if only a single package is being published (because in that case the registry
-    // doesn't affect the packaging step).
-    if pkgs.len() > 1 {
-        let reg_name = publish_registry.as_deref().unwrap_or(CRATES_IO_REGISTRY);
-        for pkg in pkgs {
-            if let Some(allowed) = pkg.publish().as_ref() {
-                if !allowed.iter().any(|a| a == reg_name) {
-                    bail!(
-                        "`{}` cannot be packaged.\n\
-                         The registry `{}` is not listed in the `package.publish` value in Cargo.toml.",
-                        pkg.name(),
-                        reg_name
-                    );
-                }
-            }
-        }
-    }
-
-    let sid = match reg_or_index {
-        None => SourceId::crates_io(gctx)?,
-        Some(RegistryOrIndex::Registry(r)) => SourceId::alt_registry(gctx, &r)?,
-        Some(RegistryOrIndex::Index(url)) => SourceId::for_registry(&url)?,
-    };
-
-    // Load source replacements that are built-in to Cargo.
-    let sid = SourceConfigMap::empty(gctx)?
-        .load(sid, &HashSet::new())?
-        .replaced_source_id();
-
-    Ok(sid)
-}
-
 /// Packages an entire workspace.
 ///
 /// Returns the generated package files. If `opts.list` is true, skips
@@ -246,9 +163,46 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Vec<Fi
             spec.query(member_ids)?;
         }
     }
-    let pkgs = ws.members_with_features(specs, &opts.cli_features)?;
+    let mut pkgs = ws.members_with_features(specs, &opts.cli_features)?;
 
-    if ws.root().join("Cargo.lock").exists() {
+    // In `members_with_features_old`, it will add "current" package (determined by the cwd)
+    // So we need filter
+    pkgs.retain(|(pkg, _feats)| specs.iter().any(|spec| spec.matches(pkg.package_id())));
+
+    Ok(do_package(ws, opts, pkgs)?
+        .into_iter()
+        .map(|x| x.2)
+        .collect())
+}
+
+/// Packages an entire workspace.
+///
+/// Returns the generated package files and the dependencies between them. If
+/// `opts.list` is true, skips generating package files and returns an empty
+/// list.
+pub(crate) fn package_with_dep_graph(
+    ws: &Workspace<'_>,
+    opts: &PackageOpts<'_>,
+    pkgs: Vec<(&Package, CliFeatures)>,
+) -> CargoResult<LocalDependencies<(CliFeatures, FileLock)>> {
+    let output = do_package(ws, opts, pkgs)?;
+
+    Ok(local_deps(output.into_iter().map(
+        |(pkg, opts, tarball)| (pkg, (opts.cli_features, tarball)),
+    )))
+}
+
+fn do_package<'a>(
+    ws: &Workspace<'_>,
+    opts: &PackageOpts<'a>,
+    pkgs: Vec<(&Package, CliFeatures)>,
+) -> CargoResult<Vec<(Package, PackageOpts<'a>, FileLock)>> {
+    if ws
+        .lock_root()
+        .as_path_unlocked()
+        .join(LOCKFILE_NAME)
+        .exists()
+    {
         // Make sure the Cargo.lock is up-to-date and valid.
         let dry_run = false;
         let _ = ops::resolve_ws(ws, dry_run)?;
@@ -256,18 +210,27 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Vec<Fi
         // below, and will be validated during the verification step.
     }
 
+    let deps = local_deps(pkgs.iter().map(|(p, f)| ((*p).clone(), f.clone())));
     let just_pkgs: Vec<_> = pkgs.iter().map(|p| p.0).collect();
-    let publish_reg = infer_registry(ws.gctx(), &just_pkgs, opts.reg_or_index.clone())?;
-    debug!("packaging for registry {publish_reg}");
+
+    // The publish registry doesn't matter unless there are local dependencies,
+    // so only try to get one if we need it. If they explicitly passed a
+    // registry on the CLI, we check it no matter what.
+    let sid = if deps.has_no_dependencies() && opts.reg_or_index.is_none() {
+        None
+    } else {
+        let sid = get_registry(ws.gctx(), &just_pkgs, opts.reg_or_index.clone())?;
+        debug!("packaging for registry {}", sid);
+        Some(sid)
+    };
 
     let mut local_reg = if ws.gctx().cli_unstable().package_workspace {
         let reg_dir = ws.target_dir().join("package").join("tmp-registry");
-        Some(TmpRegistry::new(ws.gctx(), reg_dir, publish_reg)?)
+        sid.map(|sid| TmpRegistry::new(ws.gctx(), reg_dir, sid))
+            .transpose()?
     } else {
         None
     };
-
-    let deps = local_deps(pkgs.iter().map(|(p, f)| ((*p).clone(), f.clone())));
 
     // Packages need to be created in dependency order, because dependencies must
     // be added to our local overlay before we can create lockfiles that depend on them.
@@ -288,7 +251,9 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Vec<Fi
         } else {
             let tarball = create_package(ws, &pkg, ar_files, local_reg.as_ref())?;
             if let Some(local_reg) = local_reg.as_mut() {
-                local_reg.add_package(ws, &pkg, &tarball)?;
+                if pkg.publish() != &Some(Vec::new()) {
+                    local_reg.add_package(ws, &pkg, &tarball)?;
+                }
             }
             outputs.push((pkg, opts, tarball));
         }
@@ -299,28 +264,73 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Vec<Fi
     if opts.verify {
         for (pkg, opts, tarball) in &outputs {
             run_verify(ws, pkg, tarball, local_reg.as_ref(), opts)
-                .with_context(|| "failed to verify package tarball")?
+                .context("failed to verify package tarball")?
         }
     }
 
-    Ok(outputs.into_iter().map(|x| x.2).collect())
+    Ok(outputs)
+}
+
+/// Determine which registry the packages are for.
+///
+/// The registry only affects the built packages if there are dependencies within the
+/// packages that we're packaging: if we're packaging foo-bin and foo-lib, and foo-bin
+/// depends on foo-lib, then the foo-lib entry in foo-bin's lockfile will depend on the
+/// registry that we're building packages for.
+fn get_registry(
+    gctx: &GlobalContext,
+    pkgs: &[&Package],
+    reg_or_index: Option<RegistryOrIndex>,
+) -> CargoResult<SourceId> {
+    let reg_or_index = match reg_or_index.clone() {
+        Some(r) => Some(r),
+        None => infer_registry(pkgs)?,
+    };
+
+    // Validate the registry against the packages' allow-lists.
+    let reg = reg_or_index
+        .clone()
+        .unwrap_or_else(|| RegistryOrIndex::Registry(CRATES_IO_REGISTRY.to_owned()));
+    if let RegistryOrIndex::Registry(reg_name) = reg {
+        for pkg in pkgs {
+            if let Some(allowed) = pkg.publish().as_ref() {
+                // If allowed is empty (i.e. package.publish is false), we let it slide.
+                // This allows packaging unpublishable packages (although packaging might
+                // fail later if the unpublishable package is a dependency of something else).
+                if !allowed.is_empty() && !allowed.iter().any(|a| a == &reg_name) {
+                    bail!(
+                        "`{}` cannot be packaged.\n\
+                         The registry `{}` is not listed in the `package.publish` value in Cargo.toml.",
+                        pkg.name(),
+                        reg_name
+                    );
+                }
+            }
+        }
+    }
+    Ok(ops::registry::get_source_id(gctx, reg_or_index.as_ref())?.replacement)
 }
 
 /// Just the part of the dependency graph that's between the packages we're packaging.
-/// (Is the package name a good key? Does it uniquely identify packages?)
 #[derive(Clone, Debug, Default)]
-struct LocalDependencies {
-    packages: HashMap<PackageId, (Package, CliFeatures)>,
-    graph: Graph<PackageId, ()>,
+pub(crate) struct LocalDependencies<T> {
+    pub packages: HashMap<PackageId, (Package, T)>,
+    pub graph: Graph<PackageId, ()>,
 }
 
-impl LocalDependencies {
-    fn sort(&self) -> Vec<(Package, CliFeatures)> {
+impl<T: Clone> LocalDependencies<T> {
+    pub fn sort(&self) -> Vec<(Package, T)> {
         self.graph
             .sort()
             .into_iter()
             .map(|name| self.packages[&name].clone())
             .collect()
+    }
+
+    pub fn has_no_dependencies(&self) -> bool {
+        self.graph
+            .iter()
+            .all(|node| self.graph.edges(node).next().is_none())
     }
 }
 
@@ -328,9 +338,10 @@ impl LocalDependencies {
 /// ignoring dev dependencies.
 ///
 /// We assume that the packages all belong to this workspace.
-fn local_deps(packages: impl Iterator<Item = (Package, CliFeatures)>) -> LocalDependencies {
-    let packages: HashMap<PackageId, (Package, CliFeatures)> =
-        packages.map(|pkg| (pkg.0.package_id(), pkg)).collect();
+fn local_deps<T>(packages: impl Iterator<Item = (Package, T)>) -> LocalDependencies<T> {
+    let packages: HashMap<PackageId, (Package, T)> = packages
+        .map(|(pkg, payload)| (pkg.package_id(), (pkg, payload)))
+        .collect();
 
     // Dependencies have source ids but not package ids. We draw an edge
     // whenever a dependency's source id matches one of our packages. This is
@@ -342,7 +353,7 @@ fn local_deps(packages: impl Iterator<Item = (Package, CliFeatures)>) -> LocalDe
         .collect();
 
     let mut graph = Graph::new();
-    for (pkg, _features) in packages.values() {
+    for (pkg, _payload) in packages.values() {
         graph.add(pkg.package_id());
         for dep in pkg.dependencies() {
             // Ignore local dev-dependencies because they aren't needed for intra-workspace
@@ -743,10 +754,12 @@ fn check_repo_state(
                         .and_then(|p| p.to_str())
                         .unwrap_or("")
                         .replace("\\", "/");
-                    return Ok(Some(VcsInfo {
-                        git: git(p, src_files, &repo, &opts)?,
-                        path_in_vcs,
-                    }));
+                    let Some(git) = git(p, src_files, &repo, &opts)? else {
+                        // If the git repo lacks essensial field like `sha1`, and since this field exists from the beginning,
+                        // then don't generate the corresponding file in order to maintain consistency with past behavior.
+                        return Ok(None);
+                    };
+                    return Ok(Some(VcsInfo { git, path_in_vcs }));
                 }
             }
             gctx.shell().verbose(|shell| {
@@ -772,7 +785,7 @@ fn check_repo_state(
         src_files: &[PathBuf],
         repo: &git2::Repository,
         opts: &PackageOpts<'_>,
-    ) -> CargoResult<GitVcsInfo> {
+    ) -> CargoResult<Option<GitVcsInfo>> {
         // This is a collection of any dirty or untracked files. This covers:
         // - new/modified/deleted/renamed/type change (index or worktree)
         // - untracked files (which are "new" worktree files)
@@ -799,11 +812,16 @@ fn check_repo_state(
             .collect();
         let dirty = !dirty_src_files.is_empty();
         if !dirty || opts.allow_dirty {
+            // Must check whetherthe repo has no commit firstly, otherwise `revparse_single` would fail on bare commit repo.
+            // Due to lacking the `sha1` field, it's better not record the `GitVcsInfo` for consistency.
+            if repo.is_empty()? {
+                return Ok(None);
+            }
             let rev_obj = repo.revparse_single("HEAD")?;
-            Ok(GitVcsInfo {
+            Ok(Some(GitVcsInfo {
                 sha1: rev_obj.id().to_string(),
                 dirty,
-            })
+            }))
         } else {
             anyhow::bail!(
                 "{} files in the working directory contain changes that were \
@@ -885,6 +903,7 @@ fn tar(
 
     // Put all package files into a compressed archive.
     let mut ar = Builder::new(encoder);
+    ar.sparse(false);
     let gctx = ws.gctx();
 
     let base_name = format!("{}-{}", pkg.name(), pkg.version());

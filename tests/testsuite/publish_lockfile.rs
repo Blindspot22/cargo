@@ -108,7 +108,7 @@ src/main.rs
         f,
         "foo-0.0.1.crate",
         &["Cargo.toml", "Cargo.toml.orig", "Cargo.lock", "src/main.rs"],
-        &[],
+        (),
     );
 }
 
@@ -163,7 +163,7 @@ fn no_lock_file_with_library() {
         f,
         "foo-0.0.1.crate",
         &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
-        &[],
+        (),
     );
 }
 
@@ -188,7 +188,7 @@ fn lock_file_and_workspace() {
         f,
         "foo-0.0.1.crate",
         &["Cargo.toml", "Cargo.toml.orig", "src/main.rs", "Cargo.lock"],
-        &[],
+        (),
     );
 }
 
@@ -262,8 +262,6 @@ fn outdated_lock_version_change_does_not_warn() {
 
     p.cargo("package --no-verify")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
-[UPDATING] foo v0.1.0 ([ROOT]/foo) -> v0.2.0
 [PACKAGING] foo v0.2.0 ([ROOT]/foo)
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 
@@ -403,7 +401,7 @@ dependencies = [
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [INSTALLING] foo v0.1.0
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.1 (registry `dummy-registry`)
 [COMPILING] bar v0.1.1
@@ -578,7 +576,7 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
         f,
         "foo-0.0.1.crate",
         &["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "src/main.rs"],
-        &[],
+        (),
     );
 
     let package_path = p.root().join("target/package/bar-0.0.1.crate");
@@ -588,6 +586,6 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
         f,
         "bar-0.0.1.crate",
         &["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "src/main.rs"],
-        &[],
+        (),
     );
 }

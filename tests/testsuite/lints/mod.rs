@@ -4,10 +4,8 @@ use cargo_test_support::registry::Package;
 use cargo_test_support::str;
 
 mod error;
-mod implicit_features;
 mod inherited;
 mod unknown_lints;
-mod unused_optional_dependencies;
 mod warning;
 
 #[cargo_test]
@@ -177,16 +175,19 @@ fn cap_lints() {
         .file(
             "Cargo.toml",
             r#"
+cargo-features = ["test-dummy-unstable"]
+
 [package]
 name = "bar"
 version = "0.1.0"
 edition = "2021"
+im-a-teapot = true
 
 [dependencies]
 baz = { version = "0.1.0", optional = true }
 
 [lints.cargo]
-implicit_features = "warn"
+im_a_teapot = "warn"
 "#,
         )
         .file("src/lib.rs", "")
@@ -202,9 +203,6 @@ edition = "2021"
 
 [dependencies]
 bar = "0.1.0"
-
-[lints.cargo]
-implicit_features = "warn"
 "#,
         )
         .file("src/lib.rs", "")
@@ -214,7 +212,7 @@ implicit_features = "warn"
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
 [CHECKING] bar v0.1.0

@@ -191,7 +191,7 @@ description.workspace = true
 documentation.workspace = true
 ```
 
-> **MSRV:** Requires 1.74+
+> **MSRV:** Requires 1.64+
 
 ## The `dependencies` table
 
@@ -232,7 +232,7 @@ cc.workspace = true
 rand.workspace = true
 ```
 
-> **MSRV:** Requires 1.74+
+> **MSRV:** Requires 1.64+
 
 ## The `lints` table
 
@@ -290,7 +290,7 @@ if that makes sense for the tool in question.
 [`Cargo.lock`]: ../guide/cargo-toml-vs-cargo-lock.md
 [package-metadata]: manifest.md#the-metadata-table
 [package-edition]: manifest.md#the-edition-field
-[output directory]: ../guide/build-cache.md
+[output directory]: build-cache.md
 [patch]: overriding-dependencies.md#the-patch-section
 [replace]: overriding-dependencies.md#the-replace-section
 [profiles]: profiles.md

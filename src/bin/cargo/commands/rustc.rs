@@ -38,9 +38,9 @@ pub fn cli() -> Command {
             "Build only the specified example",
             "Build all examples",
             "Build only the specified test target",
-            "Build all test targets",
+            "Build all targets that have `test = true` set",
             "Build only the specified bench target",
-            "Build all bench targets",
+            "Build all targets that have `bench = true` set",
             "Build all targets",
         )
         .arg_features()
@@ -52,6 +52,7 @@ pub fn cli() -> Command {
         .arg_unit_graph()
         .arg_timings()
         .arg_manifest_path()
+        .arg_lockfile_path()
         .arg_ignore_rust_version()
         .after_help(color_print::cstr!(
             "Run `<cyan,bold>cargo help rustc</>` for more detailed information.\n"
@@ -90,7 +91,16 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         ops::print(&ws, &compile_opts, opt_value)?;
         return Ok(());
     }
-    let crate_types = values(args, CRATE_TYPE_ARG_NAME);
+
+    let crate_types = args
+        .get_many::<String>(CRATE_TYPE_ARG_NAME)
+        .into_iter()
+        .flatten()
+        .flat_map(|s| s.split(','))
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect::<Vec<String>>();
+
     compile_opts.target_rustc_crate_types = if crate_types.is_empty() {
         None
     } else {

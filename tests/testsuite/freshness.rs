@@ -146,7 +146,7 @@ fn rebuild_sub_package_then_while_package() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 2 packages to latest compatible versions
 [COMPILING] b v0.0.1 ([ROOT]/foo/b)
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -400,7 +400,7 @@ ftest off
 
 "#]])
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] dep_crate v0.0.1 ([ROOT]/foo/dep_crate)
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -431,7 +431,7 @@ ftest on
 
 "#]])
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] dep_crate v0.0.1 ([ROOT]/foo/dep_crate)
 [COMPILING] b v0.0.1 ([ROOT]/foo/b)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -817,7 +817,7 @@ fn same_build_dir_cached_packages() {
     p.cargo("build")
         .cwd("a1")
         .with_stderr_data(str![[r#"
-[LOCKING] 4 packages to latest compatible versions
+[LOCKING] 3 packages to latest compatible versions
 [COMPILING] d v0.0.1 ([ROOT]/foo/d)
 [COMPILING] c v0.0.1 ([ROOT]/foo/c)
 [COMPILING] b v0.0.1 ([ROOT]/foo/b)
@@ -829,7 +829,7 @@ fn same_build_dir_cached_packages() {
     p.cargo("build")
         .cwd("a2")
         .with_stderr_data(str![[r#"
-[LOCKING] 4 packages to latest compatible versions
+[LOCKING] 3 packages to latest compatible versions
 [COMPILING] a2 v0.0.1 ([ROOT]/foo/a2)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1400,7 +1400,7 @@ fn update_dependency_mtime_does_not_rebuild() {
         .masquerade_as_nightly_cargo(&["mtime-on-use"])
         .env("RUSTFLAGS", "-C linker=cc")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1558,7 +1558,7 @@ fn reuse_panic_build_dep_test() {
     // Check that `bar` is not built twice. It is only needed once (without `panic`).
     p.cargo("test --lib --no-run -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name bar [..]
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -1616,21 +1616,21 @@ fn reuse_panic_pm() {
 
     // bar is built once without panic (for proc-macro) and once with (for the
     // normal dependency).
-    // TODO: Migrating to Snapbox might cause flakyness here. See https://github.com/rust-lang/cargo/pull/14161/files#r1660071433
-    #[allow(deprecated)]
     p.cargo("build -v")
-            .with_stderr_unordered(
-                "\
-[LOCKING] 3 packages to latest compatible versions
-[COMPILING] bar [..]
-[RUNNING] `rustc --crate-name bar --edition=2015 bar/src/lib.rs [..]--crate-type lib --emit=[..]link[..]
-[RUNNING] `rustc --crate-name bar --edition=2015 bar/src/lib.rs [..]--crate-type lib --emit=[..]link -C panic=abort[..]-C debuginfo=2 [..]
-[COMPILING] somepm [..]
+        .with_stderr_data(
+            str![[r#"
+[LOCKING] 2 packages to latest compatible versions
+[COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
+[RUNNING] `rustc --crate-name bar [..] -C panic=abort [..]
+[RUNNING] `rustc --crate-name bar [..]
+[COMPILING] somepm v0.0.1 ([ROOT]/foo/somepm)
 [RUNNING] `rustc --crate-name somepm [..]
-[COMPILING] foo [..]
-[RUNNING] `rustc --crate-name foo --edition=2015 src/lib.rs [..]-C panic=abort[..]
-[FINISHED] [..]
-",
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..] -C panic=abort [..]
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]
+            .unordered(),
         )
         .run();
 }
@@ -1787,7 +1787,6 @@ fn rebuild_on_mid_build_file_modification() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [COMPILING] proc_macro_dep v0.1.0 ([ROOT]/foo/proc_macro_dep)
 [COMPILING] root v0.1.0 ([ROOT]/foo/root)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1884,28 +1883,7 @@ fn dirty_both_lib_and_test() {
     // 2 != 1
     p.cargo("test --lib")
         .with_status(101)
-        .with_stdout_data(str![[r#"
-
-running 1 test
-test t1 ... FAILED
-
-failures:
-
----- t1 stdout ----
-thread 't1' panicked at src/lib.rs:8:21:
-assertion `left == right` failed: doit assert failure
-  left: 2
- right: 1
-[NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-
-failures:
-    t1
-
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
-"#]])
+        .with_stdout_data("...\n[..]doit assert failure[..]\n...")
         .run();
 
     if is_coarse_mtime() {
@@ -1949,40 +1927,12 @@ fn script_fails_stay_dirty() {
     }
     p.change_file("helper.rs", r#"pub fn doit() {panic!("Crash!");}"#);
     p.cargo("build")
-        .with_stderr_data(str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[ERROR] failed to run custom build command for `foo v0.0.1 ([ROOT]/foo)`
-
-Caused by:
-  process didn't exit successfully: `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build` ([EXIT_STATUS]: 101)
-  --- stdout
-  cargo::rerun-if-changed=build.rs
-
-  --- stderr
-  thread 'main' panicked at helper.rs:1:16:
-  Crash!
-  [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-"#]])
+        .with_stderr_data("...\n[..]Crash![..]\n...")
         .with_status(101)
         .run();
     // There was a bug where this second call would be "fresh".
     p.cargo("build")
-        .with_stderr_data(str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[ERROR] failed to run custom build command for `foo v0.0.1 ([ROOT]/foo)`
-
-Caused by:
-  process didn't exit successfully: `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build` ([EXIT_STATUS]: 101)
-  --- stdout
-  cargo::rerun-if-changed=build.rs
-
-  --- stderr
-  thread 'main' panicked at helper.rs:1:16:
-  Crash!
-  [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-"#]])
+        .with_stderr_data("...\n[..]Crash![..]\n...")
         .with_status(101)
         .run();
 }

@@ -104,7 +104,6 @@ fn fix_path_deps() {
         .with_stdout_data("")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [FIXED] bar/src/lib.rs (1 fix)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
@@ -271,7 +270,6 @@ fn upgrade_extern_crate() {
     p.cargo("fix --allow-no-vcs")
         .env("__CARGO_FIX_YOLO", "1")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FIXED] src/lib.rs (1 fix)
@@ -871,7 +869,6 @@ fn prepare_for_already_on_latest_unstable() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn prepare_for_already_on_latest_stable() {
     // Stable counterpart of prepare_for_already_on_latest_unstable.
@@ -1144,7 +1141,6 @@ fn doesnt_rebuild_dependencies() {
         .env("__CARGO_FIX_YOLO", "1")
         .with_stdout_data("")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1252,7 +1248,7 @@ fn only_warn_for_relevant_crates() {
     p.cargo("fix --allow-no-vcs --edition")
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2015 edition to 2018
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [MIGRATING] src/lib.rs from 2015 edition to 2018
@@ -1396,7 +1392,6 @@ fn fix_in_existing_repo_weird_ignore() {
     p.cargo("fix").cwd("src").run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn fix_color_message() {
     // Check that color appears in diagnostics.
@@ -1471,7 +1466,7 @@ fn edition_v2_resolver_report() {
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2018 edition to 2021
 [UPDATING] `dummy-registry` index
-[LOCKING] 4 packages to latest compatible versions
+[LOCKING] 3 packages to latest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] common v1.0.0 (registry `dummy-registry`)
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
@@ -1593,7 +1588,6 @@ fn fix_shared_cross_workspace() {
         .env("__CARGO_FIX_YOLO", "1")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] foo v0.1.0 ([ROOT]/foo/foo)
 [CHECKING] bar v0.1.0 ([ROOT]/foo/bar)
 [FIXED] [..]foo/src/shared.rs (2 fixes)
@@ -1692,7 +1686,6 @@ Original diagnostics will follow.
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn fix_with_run_cargo_in_proc_macros() {
     let p = project()
@@ -2312,47 +2305,53 @@ error[E0308]: mismatched types
         .run();
 }
 
-// This fixes rust-lang/rust#123304.
-// If that lint stops emitting duplicate suggestions,
-// we might need to find a substitution.
+// See <https://github.com/rust-lang/cargo/issues/13027>
 #[cargo_test]
 fn fix_only_once_for_duplicates() {
     let p = project()
         .file(
-            "src/lib.rs",
+            "src/main.rs",
             r#"
-                #![warn(unsafe_op_in_unsafe_fn)]
+macro_rules! foo {
+    () => {
+        &1;
+    };
+}
 
-                macro_rules! foo {
-                    ($x:ident) => {
-                        pub unsafe fn $x() {
-                            let _ = String::new().as_mut_vec();
-                        }
-                    };
-                }
-
-                foo!(a);
-                foo!(b);
-            "#,
+fn main() {
+    foo!();
+    foo!();
+}
+"#,
         )
         .build();
 
     p.cargo("fix --allow-no-vcs")
+        .env("__CARGO_FIX_YOLO", "1")
         .with_stderr_data(str![[r#"
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
-[FIXED] src/lib.rs (1 fix)
+[FIXED] src/main.rs (1 fix)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();
 
-    assert_eq!(
-        p.read_file("src/lib.rs").matches("unsafe").count(),
-        4,
-        "unsafe keyword in src/lib.rs:\n\
-            2 in lint name;\n\
-            1 from original unsafe fn;\n\
-            1 from newly-applied unsafe blocks"
+    assert_e2e().eq(
+        p.read_file("src/main.rs"),
+        str![[r#"
+
+macro_rules! foo {
+    () => {
+        let _ = &1;
+    };
+}
+
+fn main() {
+    foo!();
+    foo!();
+}
+
+"#]],
     );
 }
 
@@ -2536,7 +2535,6 @@ a = {path = "a", default_features = false}
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2021 edition to 2024
 [FIXED] Cargo.toml (11 fixes)
-[LOCKING] 2 packages to latest compatible versions
 [CHECKING] a v0.0.1 ([ROOT]/foo/a)
 [CHECKING] foo v0.0.0 ([ROOT]/foo)
 [MIGRATING] src/lib.rs from 2021 edition to 2024
@@ -2596,212 +2594,6 @@ a = {path = "a", default-features = false}
 # After build_dependencies line
 a = {path = "a", default-features = false}
 # After build_dependencies table
-
-"#]],
-    );
-}
-
-#[cargo_test]
-fn add_feature_for_unused_dep() {
-    Package::new("regular-dep", "0.1.0").publish();
-    Package::new("build-dep", "0.1.0").publish();
-    Package::new("target-dep", "0.1.0").publish();
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-[package]
-name = "foo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-regular-dep = { version = "0.1.0", optional = true }
-
-[build-dependencies]
-build-dep = { version = "0.1.0", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-target-dep = { version = "0.1.0", optional = true }
-"#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("fix --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
-        .with_stderr_data(str![[r#"
-[MIGRATING] Cargo.toml from 2021 edition to 2024
-[FIXED] Cargo.toml (3 fixes)
-[UPDATING] `dummy-registry` index
-[LOCKING] 4 packages to latest compatible versions
-[CHECKING] foo v0.1.0 ([ROOT]/foo)
-[MIGRATING] src/lib.rs from 2021 edition to 2024
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-
-"#]])
-        .run();
-    assert_e2e().eq(
-        p.read_file("Cargo.toml"),
-        str![[r#"
-
-[package]
-name = "foo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-regular-dep = { version = "0.1.0", optional = true }
-
-[build-dependencies]
-build-dep = { version = "0.1.0", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-target-dep = { version = "0.1.0", optional = true }
-
-[features]
-regular-dep = ["dep:regular-dep"]
-build-dep = ["dep:build-dep"]
-target-dep = ["dep:target-dep"]
-
-"#]],
-    );
-}
-
-#[cargo_test]
-fn add_feature_for_unused_dep_existing_table() {
-    Package::new("dep", "0.1.0").publish();
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-[package]
-name = "foo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-dep = { version = "0.1.0", optional = true }
-
-[features]
-existing = []
-"#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("fix --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
-        .with_stderr_data(str![[r#"
-[MIGRATING] Cargo.toml from 2021 edition to 2024
-[FIXED] Cargo.toml (1 fix)
-[UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
-[CHECKING] foo v0.1.0 ([ROOT]/foo)
-[MIGRATING] src/lib.rs from 2021 edition to 2024
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-
-"#]])
-        .run();
-    assert_e2e().eq(
-        p.read_file("Cargo.toml"),
-        str![[r#"
-
-[package]
-name = "foo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-dep = { version = "0.1.0", optional = true }
-
-[features]
-existing = []
-dep = ["dep:dep"]
-
-"#]],
-    );
-}
-
-#[cargo_test]
-fn activate_dep_for_dep_feature() {
-    Package::new("dep-feature", "0.1.0")
-        .feature("a", &[])
-        .feature("b", &[])
-        .publish();
-    Package::new("dep-and-dep-feature", "0.1.0")
-        .feature("a", &[])
-        .feature("b", &[])
-        .publish();
-    Package::new("renamed-feature", "0.1.0")
-        .feature("a", &[])
-        .feature("b", &[])
-        .publish();
-    Package::new("unrelated-feature", "0.1.0")
-        .feature("a", &[])
-        .feature("b", &[])
-        .publish();
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-[package]
-name = "foo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-dep-feature = { version = "0.1.0", optional = true }
-dep-and-dep-feature = { version = "0.1.0", optional = true }
-renamed-feature = { version = "0.1.0", optional = true }
-unrelated-feature = { version = "0.1.0", optional = true }
-
-[features]
-dep-feature = ["dep-feature/a", "dep-feature/b"]
-dep-and-dep-feature = ["dep:dep-and-dep-feature", "dep-and-dep-feature/a", "dep-and-dep-feature/b"]
-renamed = ["renamed-feature/a", "renamed-feature/b"]
-unrelated-feature = []
-unrelated-dep-feature = ["unrelated-feature/a", "unrelated-feature/b"]
-"#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("fix --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
-        .with_stderr_data(str![[r#"
-[MIGRATING] Cargo.toml from 2021 edition to 2024
-[FIXED] Cargo.toml (4 fixes)
-[UPDATING] `dummy-registry` index
-[LOCKING] 5 packages to latest compatible versions
-[CHECKING] foo v0.1.0 ([ROOT]/foo)
-[MIGRATING] src/lib.rs from 2021 edition to 2024
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-
-"#]])
-        .run();
-    assert_e2e().eq(
-        p.read_file("Cargo.toml"),
-        str![[r#"
-
-[package]
-name = "foo"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-dep-feature = { version = "0.1.0", optional = true }
-dep-and-dep-feature = { version = "0.1.0", optional = true }
-renamed-feature = { version = "0.1.0", optional = true }
-unrelated-feature = { version = "0.1.0", optional = true }
-
-[features]
-dep-feature = [ "dep:dep-feature","dep-feature/a", "dep-feature/b"]
-dep-and-dep-feature = ["dep:dep-and-dep-feature", "dep-and-dep-feature/a", "dep-and-dep-feature/b"]
-renamed = [ "dep:renamed-feature","renamed-feature/a", "renamed-feature/b"]
-unrelated-feature = []
-unrelated-dep-feature = [ "dep:unrelated-feature","unrelated-feature/a", "unrelated-feature/b"]
-renamed-feature = ["dep:renamed-feature"]
 
 "#]],
     );
@@ -2907,7 +2699,7 @@ dep_df_false = { version = "0.1.0", default-features = false }
 [MIGRATING] pkg_df_false/Cargo.toml from 2021 edition to 2024
 [FIXED] pkg_df_false/Cargo.toml (6 fixes)
 [UPDATING] `dummy-registry` index
-[LOCKING] 6 packages to latest compatible versions
+[LOCKING] 3 packages to latest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep_simple v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] dep_df_true v0.1.0 (registry `dummy-registry`)

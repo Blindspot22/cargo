@@ -12,7 +12,7 @@ Every manifest file consists of the following sections:
   * [`version`](#the-version-field) --- The version of the package.
   * [`authors`](#the-authors-field) --- The authors of the package.
   * [`edition`](#the-edition-field) --- The Rust edition.
-  * [`rust-version`](#the-rust-version-field) --- The minimal supported Rust version.
+  * [`rust-version`](rust-version.md) --- The minimal supported Rust version.
   * [`description`](#the-description-field) --- A description of the package.
   * [`documentation`](#the-documentation-field) --- URL of the package documentation.
   * [`readme`](#the-readme-field) --- Path to the package's README file.
@@ -30,6 +30,7 @@ Every manifest file consists of the following sections:
   * [`publish`](#the-publish-field) --- Can be used to prevent publishing the package.
   * [`metadata`](#the-metadata-table) --- Extra settings for external tools.
   * [`default-run`](#the-default-run-field) --- The default binary to run by [`cargo run`].
+  * [`autolib`](cargo-targets.md#target-auto-discovery) --- Disables library auto discovery.
   * [`autobins`](cargo-targets.md#target-auto-discovery) --- Disables binary auto discovery.
   * [`autoexamples`](cargo-targets.md#target-auto-discovery) --- Disables example auto discovery.
   * [`autotests`](cargo-targets.md#target-auto-discovery) --- Disables test auto discovery.
@@ -91,28 +92,30 @@ a keyword. [crates.io] imposes even more restrictions, such as:
 
 ### The `version` field
 
-Cargo bakes in the concept of [Semantic
-Versioning](https://semver.org/), so make sure you follow some basic rules:
+The `version` field is formatted according to the [SemVer] specification:
 
-* Before you reach 1.0.0, anything goes, but if you make breaking changes,
-  increment the minor version. In Rust, breaking changes include adding fields to
-  structs or variants to enums.
-* After 1.0.0, only make breaking changes when you increment the major version.
-  Don’t break the build.
-* After 1.0.0, don’t add any new public API (no new `pub` anything) in patch-level
-  versions. Always increment the minor version if you add any new `pub` structs,
-  traits, fields, types, functions, methods or anything else.
-* Use version numbers with three numeric parts such as 1.0.0 rather than 1.0.
+Versions must have three numeric parts,
+the major version, the minor version, and the patch version.
 
+A pre-release part can be added after a dash such as `1.0.0-alpha`.
+The pre-release part may be separated with periods to distinguish separate
+components. Numeric components will use numeric comparison while
+everything else will be compared lexicographically.
+For example, `1.0.0-alpha.11` is higher than `1.0.0-alpha.4`.
+
+A metadata part can be added after a plus, such as `1.0.0+21AF26D3`.
+This is for informational purposes only and is generally ignored by Cargo.
+
+Cargo bakes in the concept of [Semantic Versioning](https://semver.org/),
+so versions are considered considered [compatible](semver.md) if their left-most non-zero major/minor/patch component is the same.
 See the [Resolver] chapter for more information on how Cargo uses versions to
-resolve dependencies, and for guidelines on setting your own version. See the
-[SemVer compatibility] chapter for more details on exactly what constitutes a
-breaking change.
+resolve dependencies.
 
 This field is optional and defaults to `0.0.0`.  The field is required for publishing packages.
 
 > **MSRV:** Before 1.75, this field was required
 
+[SemVer]: https://semver.org
 [Resolver]: resolver.md
 [SemVer compatibility]: semver.md
 
@@ -162,36 +165,9 @@ will have `edition` explicitly specified to a newer value.
 
 ### The `rust-version` field
 
-The `rust-version` field is an optional key that tells cargo what version of the
-Rust language and compiler your package can be compiled with. If the currently
-selected version of the Rust compiler is older than the stated version, cargo
-will exit with an error, telling the user what version is required.
-
-The first version of Cargo that supports this field was released with Rust 1.56.0.
-In older releases, the field will be ignored, and Cargo will display a warning.
-
-```toml
-[package]
-# ...
-rust-version = "1.56"
-```
-
-The Rust version must be a bare version number with two or three components; it
-cannot include semver operators or pre-release identifiers. Compiler pre-release
-identifiers such as -nightly will be ignored while checking the Rust version.
-The `rust-version` must be equal to or newer than the version that first
-introduced the configured `edition`.
-
-The `rust-version` may be ignored using the `--ignore-rust-version` option.
-
-Setting the `rust-version` key in `[package]` will affect all targets/crates in
-the package, including test suites, benchmarks, binaries, examples, etc.
-
-To find the minimum `rust-version` compatible with your project, you can use third-party tools like [`cargo-msrv`](https://crates.io/crates/cargo-msrv).
-
-When used on packages that get published, we recommend [verifying the `rust-version`](../guide/continuous-integration.md#verifying-rust-version).
-
-> **MSRV:** Respected as of 1.56
+The `rust-version` field tells cargo what version of the
+Rust toolchain you support for your package.
+See [the Rust version chapter](rust-version.md) for more detail.
 
 ### The `description` field
 
@@ -689,6 +665,7 @@ more detail.
         "#the-exclude-and-include-fields-optional": "manifest.html#the-exclude-and-include-fields",
         "#the-publish--field-optional": "manifest.html#the-publish-field",
         "#the-metadata-table-optional": "manifest.html#the-metadata-table",
+        "#rust-version": "rust-version.html",
     };
     var target = fragments[window.location.hash];
     if (target) {

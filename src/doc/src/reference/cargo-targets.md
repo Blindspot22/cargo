@@ -28,10 +28,10 @@ bench = false
 ## Binaries
 
 Binary targets are executable programs that can be run after being compiled.
-The default binary filename is `src/main.rs`, which defaults to the name of
-the package. Additional binaries are stored in the [`src/bin/`
-directory][package layout]. The settings for each binary can be [customized]
-in the `[[bin]]` tables in `Cargo.toml`.
+A binary's source can be `src/main.rs` and/or stored in the [`src/bin/`
+directory][package layout]. For `src/main.rs`, the default binary name is the
+package name. The settings for each binary can be [customized] in the`[[bin]]`
+tables in `Cargo.toml`.
 
 Binaries can use the public API of the package's library. They are also linked
 with the [`[dependencies]`][dependencies] defined in `Cargo.toml`.
@@ -323,13 +323,14 @@ configuration tables, such as `[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]`, or
 standard directory layout.
 
 The automatic target discovery can be disabled so that only manually
-configured targets will be built. Setting the keys `autobins`, `autoexamples`,
+configured targets will be built. Setting the keys `autolib`, `autobins`, `autoexamples`,
 `autotests`, or `autobenches` to `false` in the `[package]` section will
 disable auto-discovery of the corresponding target type.
 
 ```toml
 [package]
 # ...
+autolib = false
 autobins = false
 autoexamples = false
 autotests = false
@@ -363,8 +364,11 @@ autobins = false
 > is `false` if at least one target is manually defined in `Cargo.toml`.
 > Beginning with the 2018 edition, the default is always `true`.
 
+> **MSRV:** Respected as of 1.27 for `autobins`, `autoexamples`, `autotests`, and `autobenches`
 
-[Build cache]: ../guide/build-cache.md
+> **MSRV:** Respected as of 1.83 for `autolib`
+
+[Build cache]: build-cache.md
 [Rust Edition]: ../../edition-guide/index.html
 [`--test` flag]: ../../rustc/command-line-arguments.html#option-test
 [`cargo bench`]: ../commands/cargo-bench.md

@@ -27,6 +27,10 @@ stored in the `target/package` directory. This performs the following steps:
     - A `.cargo_vcs_info.json` file is included that contains information
       about the current VCS checkout hash if available, as well as a flag if the
       worktree is dirty.
+    - Symlinks are flattened to their target files.
+    - Files and directories are included or excluded based on rules mentioned in
+      [the `[include]` and `[exclude]` fields](../reference/manifest.html#the-exclude-and-include-fields).
+
 3. Extract the `.crate` file and build it to verify it can build.
     - This will rebuild your package from scratch to ensure that it can be
       built from a pristine state. The `--no-verify` flag can be used to skip
@@ -155,7 +159,7 @@ list of supported targets. This flag may be specified multiple times.</p>
 <a href="../reference/config.html">config value</a>.</p>
 <p>Note that specifying this flag makes Cargo run in a different mode where the
 target artifacts are placed in a separate directory. See the
-<a href="../guide/build-cache.html">build cache</a> documentation for more details.</dd>
+<a href="../reference/build-cache.html">build cache</a> documentation for more details.</dd>
 
 
 <dt class="option-term" id="option-cargo-package---target-dir"><a class="option-anchor" href="#option-cargo-package---target-dir"></a><code>--target-dir</code> <em>directory</em></dt>
@@ -231,6 +235,18 @@ offline.</p>
 
 <dt class="option-term" id="option-cargo-package---frozen"><a class="option-anchor" href="#option-cargo-package---frozen"></a><code>--frozen</code></dt>
 <dd class="option-desc">Equivalent to specifying both <code>--locked</code> and <code>--offline</code>.</dd>
+
+
+<dt class="option-term" id="option-cargo-package---lockfile-path"><a class="option-anchor" href="#option-cargo-package---lockfile-path"></a><code>--lockfile-path</code> <em>PATH</em></dt>
+<dd class="option-desc">Changes the path of the lockfile from the default (<code>&lt;workspace_root&gt;/Cargo.lock</code>) to <em>PATH</em>. <em>PATH</em> must end with
+<code>Cargo.lock</code> (e.g. <code>--lockfile-path /tmp/temporary-lockfile/Cargo.lock</code>). Note that providing
+<code>--lockfile-path</code> will ignore existing lockfile at the default path, and instead will
+either use the lockfile from <em>PATH</em>, or write a new lockfile into the provided <em>PATH</em> if it doesn’t exist.
+This flag can be used to run most commands in read-only directories, writing lockfile into the provided <em>PATH</em>.</p>
+<p>This option is only available on the <a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html">nightly
+channel</a> and
+requires the <code>-Z unstable-options</code> flag to enable (see
+<a href="https://github.com/rust-lang/cargo/issues/14421">#14421</a>).</dd>
 
 
 </dl>

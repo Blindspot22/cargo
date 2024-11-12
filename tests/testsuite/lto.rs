@@ -30,7 +30,7 @@ fn with_deps() {
     p.cargo("build -v --release")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -73,7 +73,7 @@ fn shared_deps() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -117,7 +117,7 @@ fn build_dep_not_ltod() {
     p.cargo("build -v --release")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -132,7 +132,6 @@ fn build_dep_not_ltod() {
         .run();
 }
 
-#[allow(deprecated)]
 #[cargo_test]
 fn complicated() {
     Package::new("dep-shared", "0.0.1")
@@ -299,7 +298,7 @@ fn off_in_manifest_works() {
     p.cargo("build -v --release")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -619,7 +618,7 @@ fn cdylib_and_rlib() {
 [RUNNING] `[ROOT]/foo/target/release/deps/bar-[HASH][EXE]`
 [RUNNING] `[ROOT]/foo/target/release/deps/b-[HASH][EXE]`
 [DOCTEST] bar
-[RUNNING] `rustdoc --edition=2015 --crate-type cdylib --crate-type rlib --crate-name bar --test [..]-C lto [..]
+[RUNNING] `rustdoc --edition=2015 --crate-type cdylib --crate-type rlib --color auto --crate-name bar --test [..]-C lto [..]
 
 "#]].unordered())
         .run();
@@ -751,7 +750,7 @@ fn test_profile() {
         // unordered because the two `foo` builds start in parallel
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -809,7 +808,7 @@ fn doctest() {
     p.cargo("test --doc --release -v")
         // embed-bitcode should be harmless here
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name bar [..]--crate-type lib [..]-C linker-plugin-lto [..]`
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
@@ -900,7 +899,7 @@ fn fresh_swapping_commands() {
     p.cargo("build --release -v")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 1 package to latest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
 [COMPILING] bar v1.0.0
