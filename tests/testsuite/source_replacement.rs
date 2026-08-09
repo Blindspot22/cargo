@@ -2,9 +2,10 @@
 
 use std::fs;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use crate::utils::cargo_process;
 use cargo_test_support::registry::{Package, RegistryBuilder, TestRegistry};
-use cargo_test_support::{cargo_process, paths, project, str, t};
+use cargo_test_support::{paths, project, str, t};
 
 fn setup_replacement(config: &str) -> TestRegistry {
     let crates_io = RegistryBuilder::new()
@@ -208,12 +209,13 @@ fn publish_with_replacement() {
         .replace_crates_io(crates_io.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
-[WARNING] manifest has no documentation, homepage or repository.
-See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[WARNING] manifest has no documentation, homepage or repository
+  |
+  = [NOTE] see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
 [PACKAGING] foo v0.0.1 ([ROOT]/foo)
-[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
-[VERIFYING] foo v0.0.1 ([ROOT]/foo)
 [UPDATING] `alternative` index
+[PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[VERIFYING] foo v0.0.1 ([ROOT]/foo)
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.0 (registry `alternative`)
 [COMPILING] bar v1.0.0
@@ -221,8 +223,8 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] foo v0.0.1 ([ROOT]/foo)
 [UPLOADED] foo v0.0.1 to registry `crates-io`
-[NOTE] waiting for `foo v0.0.1` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for foo v0.0.1 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.0.1 at registry `crates-io`
 
 "#]])
@@ -284,7 +286,7 @@ fn source_replacement_with_registry_url() {
         .replace_crates_io(crates_io.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] `using-registry-url` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `using-registry-url`)
 [CHECKING] bar v0.0.1
@@ -296,7 +298,7 @@ fn source_replacement_with_registry_url() {
 }
 
 #[cargo_test]
-fn source_replacement_with_no_package_in_directoy() {
+fn source_replacement_with_no_package_in_directory() {
     let p = project()
         .file(
             "Cargo.toml",

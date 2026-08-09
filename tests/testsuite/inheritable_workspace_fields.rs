@@ -1,6 +1,6 @@
 //! Tests for inheriting Cargo.toml fields with field.workspace = true
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::{Dependency, Package, RegistryBuilder};
 use cargo_test_support::{
     basic_lib_manifest, basic_manifest, git, paths, project, publish, registry, str,
@@ -167,8 +167,8 @@ fn inherit_own_workspace_fields() {
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] foo v1.2.3 ([ROOT]/foo)
 [UPLOADED] foo v1.2.3 to registry `crates-io`
-[NOTE] waiting for `foo v1.2.3` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for foo v1.2.3 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v1.2.3 at registry `crates-io`
 
 "#]])
@@ -300,7 +300,7 @@ fn inherit_own_dependencies() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [DOWNLOADED] dep-build v0.8.2 (registry `dummy-registry`)
@@ -323,8 +323,9 @@ fn inherit_own_dependencies() {
         .replace_crates_io(registry.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
-[WARNING] manifest has no description, license, license-file, documentation, homepage or repository.
-See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[WARNING] manifest has no description, license, license-file, documentation, homepage or repository
+  |
+  = [NOTE] see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
 [PACKAGING] bar v0.2.0 ([ROOT]/foo)
 [UPDATING] crates.io index
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
@@ -334,8 +335,8 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] bar v0.2.0 ([ROOT]/foo)
 [UPLOADED] bar v0.2.0 to registry `crates-io`
-[NOTE] waiting for `bar v0.2.0` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for bar v0.2.0 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] bar v0.2.0 at registry `crates-io`
 
 "#]])
@@ -466,13 +467,13 @@ fn inherit_own_detailed_dependencies() {
         .build();
 
     Package::new("dep", "0.1.2")
-        .feature("testing", &vec![])
+        .feature("testing", &[])
         .publish();
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [CHECKING] dep v0.1.2
@@ -490,8 +491,9 @@ fn inherit_own_detailed_dependencies() {
         .replace_crates_io(registry.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
-[WARNING] manifest has no description, license, license-file, documentation, homepage or repository.
-See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[WARNING] manifest has no description, license, license-file, documentation, homepage or repository
+  |
+  = [NOTE] see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
 [PACKAGING] bar v0.2.0 ([ROOT]/foo)
 [UPDATING] crates.io index
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
@@ -501,8 +503,8 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] bar v0.2.0 ([ROOT]/foo)
 [UPLOADED] bar v0.2.0 to registry `crates-io`
-[NOTE] waiting for `bar v0.2.0` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for bar v0.2.0 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] bar v0.2.0 at registry `crates-io`
 
 "#]])
@@ -660,7 +662,7 @@ fn inherited_dependencies_union_features() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
@@ -754,16 +756,17 @@ fn inherit_workspace_fields() {
 [PACKAGING] bar v1.2.3 ([ROOT]/foo/bar)
 [PACKAGED] 8 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 [VERIFYING] bar v1.2.3 ([ROOT]/foo/bar)
-[WARNING] only one of `license` or `license-file` is necessary
+[WARNING] Cargo.toml: only one of `license` or `license-file` is necessary
 `license` should be used if the package license can be expressed with a standard SPDX expression.
 `license-file` should be used if the package uses a non-standard license.
 See https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields for more information.
+[WARNING] `bar` (manifest) generated 1 warning
 [COMPILING] bar v1.2.3 ([ROOT]/foo/target/package/bar-1.2.3)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] bar v1.2.3 ([ROOT]/foo/bar)
 [UPLOADED] bar v1.2.3 to registry `crates-io`
-[NOTE] waiting for `bar v1.2.3` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for bar v1.2.3 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] bar v1.2.3 at registry `crates-io`
 
 "#]])
@@ -901,7 +904,7 @@ fn inherit_dependencies() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [DOWNLOADED] dep-build v0.8.2 (registry `dummy-registry`)
@@ -925,8 +928,9 @@ fn inherit_dependencies() {
         .cwd("bar")
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
-[WARNING] manifest has no description, license, license-file, documentation, homepage or repository.
-See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[WARNING] manifest has no description, license, license-file, documentation, homepage or repository
+  |
+  = [NOTE] see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
 [PACKAGING] bar v0.2.0 ([ROOT]/foo/bar)
 [UPDATING] crates.io index
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
@@ -936,8 +940,8 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] bar v0.2.0 ([ROOT]/foo/bar)
 [UPLOADED] bar v0.2.0 to registry `crates-io`
-[NOTE] waiting for `bar v0.2.0` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for bar v0.2.0 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] bar v0.2.0 at registry `crates-io`
 
 "#]])
@@ -1076,7 +1080,7 @@ fn inherit_target_dependencies() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.2 (registry `dummy-registry`)
 [CHECKING] dep v0.1.2
@@ -1123,7 +1127,7 @@ fn inherit_dependency_override_optional() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] bar v0.2.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1164,18 +1168,21 @@ fn inherit_dependency_features() {
         .build();
 
     p.cargo("check")
-        .with_stderr_data(str![[r#"
+        .with_stderr_data(
+            str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [CHECKING] fancy_dep v0.2.4
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .run();
 
     let lockfile = p.read_lockfile();
@@ -1236,7 +1243,7 @@ fn inherit_detailed_dependencies() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/detailed`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] detailed v0.5.0 ([ROOTURL]/detailed?branch=branchy#[..])
 [CHECKING] bar v0.2.0 ([ROOT]/foo/bar)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1327,7 +1334,6 @@ fn error_workspace_false() {
   |
 8 |             description = { workspace = false }
   |                                         ^^^^^
-  |
 
 "#]])
         .run();
@@ -1407,13 +1413,11 @@ fn error_malformed_workspace_root() {
         .cwd("bar")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] invalid array
-expected `]`
- --> ../Cargo.toml:3:24
+[ERROR] unclosed array, expected `]`
+ --> ../Cargo.toml:3:36
   |
 3 |             members = [invalid toml
-  |                        ^
-  |
+  |                                    ^
 
 "#]])
         .run();
@@ -1535,22 +1539,23 @@ fn warn_inherit_def_feat_true_member_def_feat_false() {
         .build();
 
     p.cargo("check").with_stderr_data(str![[r#"
-[WARNING] [ROOT]/foo/Cargo.toml: `default-features` is ignored for dep, since `default-features` was true for `workspace.dependencies.dep`, this could become a hard error in the future
+[WARNING] Cargo.toml: `default-features` is ignored for dep, since `default-features` was true for `workspace.dependencies.dep`; overriding workspace `default-features` to false requires Rust 1.99+ and the 2024 edition
+[WARNING] `bar` (manifest) generated 1 warning
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [CHECKING] fancy_dep v0.2.4
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]]).run();
+"#]].unordered()).run();
 }
 
-#[cargo_test(nightly, reason = "edition2024 is not stable")]
-fn warn_inherit_def_feat_true_member_def_feat_false_2024_edition() {
+#[cargo_test]
+fn inherit_def_feat_true_member_def_feat_false_2024_edition() {
     Package::new("dep", "0.1.0")
         .feature("default", &["fancy_dep"])
         .add_dep(Dependency::new("fancy_dep", "0.2").optional(true))
@@ -1563,8 +1568,6 @@ fn warn_inherit_def_feat_true_member_def_feat_false_2024_edition() {
         .file(
             "Cargo.toml",
             r#"
-            cargo-features = ["edition2024"]
-
             [package]
             name = "bar"
             version = "0.2.0"
@@ -1583,16 +1586,14 @@ fn warn_inherit_def_feat_true_member_def_feat_false_2024_edition() {
         .build();
 
     p.cargo("check")
-        .masquerade_as_nightly_cargo(&["edition2024"])
-        .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
-
-Caused by:
-  error inheriting `dep` from workspace root manifest's `workspace.dependencies.dep`
-
-Caused by:
-  `default-features = false` cannot override workspace's `default-features`
+[UPDATING] `dummy-registry` index
+[LOCKING] 1 package to highest Rust [..] compatible version
+[DOWNLOADING] crates ...
+[DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[CHECKING] dep v0.1.0
+[CHECKING] bar v0.2.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();
@@ -1630,22 +1631,23 @@ fn warn_inherit_simple_member_def_feat_false() {
         .build();
 
     p.cargo("check").with_stderr_data(str![[r#"
-[WARNING] [ROOT]/foo/Cargo.toml: `default-features` is ignored for dep, since `default-features` was not specified for `workspace.dependencies.dep`, this could become a hard error in the future
+[WARNING] Cargo.toml: `default-features` is ignored for dep, since `default-features` was not specified for `workspace.dependencies.dep`; overriding workspace `default-features` to false requires Rust 1.99+ and the 2024 edition
+[WARNING] `bar` (manifest) generated 1 warning
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [CHECKING] fancy_dep v0.2.4
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]]).run();
+"#]].unordered()).run();
 }
 
-#[cargo_test(nightly, reason = "edition2024 is not stable")]
-fn warn_inherit_simple_member_def_feat_false_2024_edition() {
+#[cargo_test]
+fn inherit_simple_member_def_feat_false_2024_edition() {
     Package::new("dep", "0.1.0")
         .feature("default", &["fancy_dep"])
         .add_dep(Dependency::new("fancy_dep", "0.2").optional(true))
@@ -1658,8 +1660,6 @@ fn warn_inherit_simple_member_def_feat_false_2024_edition() {
         .file(
             "Cargo.toml",
             r#"
-            cargo-features = ["edition2024"]
-
             [package]
             name = "bar"
             version = "0.2.0"
@@ -1678,16 +1678,14 @@ fn warn_inherit_simple_member_def_feat_false_2024_edition() {
         .build();
 
     p.cargo("check")
-        .masquerade_as_nightly_cargo(&["edition2024"])
-        .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
-
-Caused by:
-  error inheriting `dep` from workspace root manifest's `workspace.dependencies.dep`
-
-Caused by:
-  `default-features = false` cannot override workspace's `default-features`
+[UPDATING] `dummy-registry` index
+[LOCKING] 1 package to highest Rust [..] compatible version
+[DOWNLOADING] crates ...
+[DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[CHECKING] dep v0.1.0
+[CHECKING] bar v0.2.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();
@@ -1725,18 +1723,21 @@ fn inherit_def_feat_false_member_def_feat_true() {
         .build();
 
     p.cargo("check")
-        .with_stderr_data(str![[r#"
+        .with_stderr_data(
+            str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
+[DOWNLOADED] fancy_dep v0.2.4 (registry `dummy-registry`)
 [CHECKING] fancy_dep v0.2.4
 [CHECKING] dep v0.1.0
 [CHECKING] bar v0.2.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -1810,10 +1811,11 @@ fn warn_inherit_unused_manifest_key_dep() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: workspace.dependencies.dep.wxz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: dependencies.dep.wxz
+[WARNING] Cargo.toml: unused manifest key: workspace.dependencies.dep.wxz
+[WARNING] Cargo.toml: unused manifest key: dependencies.dep.wxz
+[WARNING] `bar` (manifest) generated 2 warnings
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [CHECKING] dep v0.1.0
@@ -1847,7 +1849,8 @@ fn warn_unused_workspace_package_field() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: workspace.package.name
+[WARNING] Cargo.toml: unused manifest key: workspace.package.name
+[WARNING] `foo` (manifest) generated 1 warning
 [CHECKING] foo v0.0.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1904,20 +1907,21 @@ fn warn_inherit_unused_manifest_key_package() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.authors.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.categories.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.description.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.documentation.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.edition.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.exclude.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.homepage.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.include.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.keywords.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.license.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.publish.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.repository.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.rust-version.xyz
-[WARNING] [ROOT]/foo/Cargo.toml: unused manifest key: package.version.xyz
+[WARNING] Cargo.toml: unused manifest key: package.authors.xyz
+[WARNING] Cargo.toml: unused manifest key: package.categories.xyz
+[WARNING] Cargo.toml: unused manifest key: package.description.xyz
+[WARNING] Cargo.toml: unused manifest key: package.documentation.xyz
+[WARNING] Cargo.toml: unused manifest key: package.edition.xyz
+[WARNING] Cargo.toml: unused manifest key: package.exclude.xyz
+[WARNING] Cargo.toml: unused manifest key: package.homepage.xyz
+[WARNING] Cargo.toml: unused manifest key: package.include.xyz
+[WARNING] Cargo.toml: unused manifest key: package.keywords.xyz
+[WARNING] Cargo.toml: unused manifest key: package.license.xyz
+[WARNING] Cargo.toml: unused manifest key: package.publish.xyz
+[WARNING] Cargo.toml: unused manifest key: package.repository.xyz
+[WARNING] Cargo.toml: unused manifest key: package.rust-version.xyz
+[WARNING] Cargo.toml: unused manifest key: package.version.xyz
+[WARNING] `bar` (manifest) generated 14 warnings
 [CHECKING] bar v1.2.3 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 

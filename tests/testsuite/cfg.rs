@@ -1,6 +1,6 @@
-//! Tests for cfg() expressions.
+//! Tests for `cfg()` expressions.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::rustc_host;
 use cargo_test_support::{basic_manifest, project, str};
@@ -56,7 +56,7 @@ fn dont_include() {
         .build();
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] a v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -93,18 +93,21 @@ fn works_through_the_registry() {
         .build();
 
     p.cargo("check")
-        .with_stderr_data(str![[r#"
+        .with_stderr_data(
+            str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] baz v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[DOWNLOADED] baz v0.1.0 (registry `dummy-registry`)
 [CHECKING] baz v0.1.0
 [CHECKING] bar v0.1.0
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -144,7 +147,7 @@ fn ignore_version_from_other_platform() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [ADDING] bar v0.1.0 (available: v0.2.0)
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
@@ -344,6 +347,13 @@ fn bad_cfg_discovery() {
                     print!("{}", run_rustc());
                     return;
                 }
+                if mode == "no-sysroot" {
+                    return;
+                }
+                if std::env::args_os().any(|a| a == "--print=sysroot") {
+                    print!("{}", run_rustc());
+                    return;
+                }
                 if mode == "no-crate-types" {
                     return;
                 }
@@ -353,24 +363,19 @@ fn bad_cfg_discovery() {
                 }
                 let output = run_rustc();
                 let mut lines = output.lines();
-                let sysroot = loop {
+                let mut line = loop {
                     let line = lines.next().unwrap();
                     if line.contains("___") {
-                        println!("{}", line);
+                        println!("{line}");
                     } else {
                         break line;
                     }
                 };
-                if mode == "no-sysroot" {
-                    return;
-                }
-                println!("{}", sysroot);
 
                 if mode == "no-split-debuginfo" {
                     return;
                 }
                 loop {
-                    let line = lines.next().unwrap();
                     if line == "___" {
                         println!("\n{line}");
                         break;
@@ -379,6 +384,7 @@ fn bad_cfg_discovery() {
                         // concat them into one line.
                         print!("{line},");
                     }
+                    line = lines.next().unwrap();
                 };
 
                 if mode != "bad-cfg" {
@@ -408,32 +414,22 @@ foo
 
     p.cargo("check")
         .env("RUSTC", &funky_rustc)
-        .env("FUNKY_MODE", "no-crate-types")
+        .env("FUNKY_MODE", "no-sysroot")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] malformed output when learning about crate-type bin information
-command was: `[ROOT]/compiler/target/debug/compiler[..] --crate-name ___ [..]`
-(no output received)
+[ERROR] sysroot path "" does not exist
 
 "#]])
         .run();
 
     p.cargo("check")
         .env("RUSTC", &funky_rustc)
-        .env("FUNKY_MODE", "no-sysroot")
+        .env("FUNKY_MODE", "no-crate-types")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] output of --print=sysroot missing when learning about target-specific information from rustc
-command was: `[ROOT]/compiler/target/debug/compiler[..]--crate-type [..]`
-
---- stdout
-___[EXE]
-lib___.rlib
-[..]___.[..]
-[..]___.[..]
-[..]___.[..]
-[..]___.[..]
-
+[ERROR] malformed output when learning about crate-type bin information
+command was: `[ROOT]/compiler/target/debug/compiler[..] --crate-name ___ [..]`
+(no output received)
 
 "#]])
         .run();
@@ -453,7 +449,6 @@ lib___.rlib
 [..]___.[..]
 [..]___.[..]
 [..]___.[..]
-[..]
 
 
 "#]])
@@ -471,7 +466,6 @@ lib___.rlib
 [..]___.[..]
 [..]___.[..]
 [..]___.[..]
-[..]
 [..],[..]
 ___
 123
@@ -518,6 +512,302 @@ fn exclusive_dep_kinds() {
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 error[E0463]: can't find crate for `bar`
 ...
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_raw_idents() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [target.'cfg(any(r#true, r#all, r#target_os = "<>"))'.dependencies]
+                b = { path = "b/" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "pub fn foo() {}")
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to highest compatible version
+[CHECKING] b v0.0.1 ([ROOT]/foo/b)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_raw_idents_empty() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [target.'cfg(r#))'.dependencies]
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  failed to parse `r#)` as a cfg expression: unexpected character `)` in cfg, expected parens, a comma, an identifier, or a string
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_raw_idents_not_really() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [target.'cfg(r#11))'.dependencies]
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  failed to parse `r#11)` as a cfg expression: unexpected character `1` in cfg, expected parens, a comma, an identifier, or a string
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_keywords() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2015"
+
+                [target.'cfg(any(async, fn, const, return, true))'.dependencies]
+                b = { path = "b/" }
+            "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [target."cfg(any(for, match, extern, crate, false))"]
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "pub fn foo() {}")
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to highest compatible version
+[CHECKING] b v0.0.1 ([ROOT]/foo/b)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_booleans() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [target.'cfg(true)'.dependencies]
+                b = { path = 'b' }
+
+                [target.'cfg(false)'.dependencies]
+                c = { path = 'c' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "")
+        .file("c/Cargo.toml", &basic_manifest("c", "0.0.1"))
+        .file("c/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 2 packages to highest compatible versions
+[CHECKING] b v0.0.1 ([ROOT]/foo/b)
+[CHECKING] a v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_booleans_config() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.0.1"
+                edition = "2015"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            ".cargo/config.toml",
+            r#"
+                [target.'cfg(true)']
+                rustflags = []
+            "#,
+        )
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[CHECKING] a v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_booleans_not() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [target.'cfg(not(false))'.dependencies]
+                b = { path = 'b' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to highest compatible version
+[CHECKING] b v0.0.1 ([ROOT]/foo/b)
+[CHECKING] a v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_booleans_combinators() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [target.'cfg(all(any(true), not(false), true))'.dependencies]
+                b = { path = 'b' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to highest compatible version
+[CHECKING] b v0.0.1 ([ROOT]/foo/b)
+[CHECKING] a v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cfg_booleans_rustflags_no_effect() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [target.'cfg(true)'.dependencies]
+                b = { path = 'b' }
+
+                [target.'cfg(false)'.dependencies]
+                c = { path = 'c' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "")
+        .file("c/Cargo.toml", &basic_manifest("c", "0.0.1"))
+        .file("c/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .env("RUSTFLAGS", "--cfg r#false")
+        .with_stderr_data(str![[r#"
+[LOCKING] 2 packages to highest compatible versions
+[CHECKING] b v0.0.1 ([ROOT]/foo/b)
+[CHECKING] a v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
 "#]])
         .run();
 }

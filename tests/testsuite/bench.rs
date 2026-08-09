@@ -1,6 +1,6 @@
 //! Tests for the `cargo bench` command.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::{basic_bin_manifest, basic_lib_manifest, basic_manifest, project, str};
 
 #[cargo_test(nightly, reason = "bench")]
@@ -522,7 +522,7 @@ fn bench_with_deep_lib_dep() {
 
     p.cargo("bench")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [COMPILING] bar v0.0.1 ([ROOT]/bar)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
@@ -715,7 +715,7 @@ fn bench_autodiscover_2015() {
 
     p.cargo("bench bench_basic")
         .with_stderr_data(str![[r#"
-[WARNING] An explicit [[bench]] section is specified in Cargo.toml which currently
+[WARNING] Cargo.toml: An explicit [[bench]] section is specified in Cargo.toml which currently
 disables Cargo from automatically inferring other benchmark targets.
 This inference behavior will change in the Rust 2018 edition and the following
 files will be included as a benchmark target:
@@ -730,6 +730,7 @@ automatically infer them to be a target, such as in subfolders.
 
 For more information on this warning you can consult
 https://github.com/rust-lang/cargo/issues/5330
+[WARNING] `foo` (manifest) generated 1 warning
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
 [RUNNING] [..] (target/release/deps/foo-[HASH][EXE])
@@ -1073,7 +1074,7 @@ fn bench_dylib() {
 
     p.cargo("bench -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] [..] -C opt-level=3 [..]
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -1551,7 +1552,7 @@ fn test_bench_multiple_packages() {
 "#]])
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] bar v0.1.0 ([ROOT]/bar)
 [COMPILING] baz v0.1.0 ([ROOT]/baz)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
@@ -1943,8 +1944,9 @@ fn legacy_bench_name() {
 
     p.cargo("bench")
         .with_stderr_data(str![[r#"
-[WARNING] path `src/bench.rs` was erroneously implicitly accepted for benchmark `bench`,
+[WARNING] Cargo.toml: path `src/bench.rs` was erroneously implicitly accepted for benchmark `bench`,
 please set bench.path in Cargo.toml
+[WARNING] `foo` (manifest) generated 1 warning
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `bench` profile [optimized] target(s) in [ELAPSED]s
 [RUNNING] unittests src/lib.rs (target/release/deps/foo-[HASH][EXE])

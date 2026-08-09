@@ -1,11 +1,16 @@
 use crate::command_prelude::*;
 use crate::util::cache_lock::CacheLockMode;
-use cargo::core::gc::Gc;
-use cargo::core::gc::{parse_human_size, parse_time_span, GcOpts};
-use cargo::core::global_cache_tracker::GlobalCacheTracker;
+use crate::util::time_span::parse_time_span;
+
+use crate::util::data_structures::IndexSet;
 use cargo::ops::CleanContext;
 use cargo::ops::{self, CleanOptions};
 use cargo::util::print_available_packages;
+use cargo::workspace::gc::Gc;
+use cargo::workspace::gc::GcOpts;
+use cargo::workspace::gc::parse_human_size;
+use cargo::workspace::global_cache_tracker::GlobalCacheTracker;
+use clap_complete::ArgValueCandidates;
 use std::time::Duration;
 
 pub fn cli() -> Command {
@@ -13,13 +18,19 @@ pub fn cli() -> Command {
         .about("Remove artifacts that cargo has generated in the past")
         .arg_doc("Whether or not to clean just the documentation directory")
         .arg_silent_suggestion()
-        .arg_package_spec_simple("Package to clean artifacts for")
+        .arg_package_spec_simple(
+            "Package to clean artifacts for",
+            ArgValueCandidates::new(get_pkg_name_candidates),
+        )
+        .arg(
+            flag("workspace", "Clean artifacts of the workspace members")
+                .help_heading(heading::PACKAGE_SELECTION),
+        )
         .arg_release("Whether or not to clean release artifacts")
         .arg_profile("Clean artifacts of the specified profile")
         .arg_target_triple("Target triple to clean output for")
         .arg_target_dir()
         .arg_manifest_path()
-        .arg_lockfile_path()
         .arg_dry_run("Display what would be deleted without deleting anything")
         .args_conflicts_with_subcommands(true)
         .subcommand(
@@ -122,7 +133,7 @@ pub fn cli() -> Command {
                 ),
         )
         .after_help(color_print::cstr!(
-            "Run `<cyan,bold>cargo help clean</>` for more detailed information.\n"
+            "Run `<bright-cyan,bold>cargo help clean</>` for more detailed information.\n"
         ))
 }
 
@@ -142,15 +153,20 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     if args.is_present_with_zero_values("package") {
         print_available_packages(&ws)?;
     }
+    let mut spec = IndexSet::from_iter(values(args, "package"));
 
+    if args.flag("workspace") {
+        spec.extend(ws.members().map(|package| package.name().to_string()))
+    };
     let opts = CleanOptions {
         gctx,
-        spec: values(args, "package"),
+        spec,
         targets: args.targets()?,
         requested_profile: args.get_profile_name("dev", ProfileChecking::Custom)?,
         profile_specified: args.contains_id("profile") || args.flag("release"),
         doc: args.flag("doc"),
         dry_run: args.dry_run(),
+        explicit_target_dir_arg: args.contains_id("target-dir"),
     };
     ops::clean(&ws, &opts)?;
     Ok(())

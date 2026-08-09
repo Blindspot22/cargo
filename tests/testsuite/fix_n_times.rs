@@ -3,7 +3,7 @@
 //!
 //! These tests use a replacement of rustc ("rustc-fix-shim") which emits JSON
 //! messages based on what the test is exercising. It uses an environment
-//! variable RUSTC_FIX_SHIM_SEQUENCE which determines how it should behave
+//! variable `RUSTC_FIX_SHIM_SEQUENCE` which determines how it should behave
 //! based on how many times `rustc` has run. It keeps track of how many times
 //! rustc has run in a local file.
 //!
@@ -17,8 +17,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use cargo_test_support::prelude::*;
-use cargo_test_support::{basic_manifest, paths, project, str, tools, Execs};
+use crate::prelude::*;
+use crate::utils::tools;
+use cargo_test_support::{Execs, basic_manifest, paths, project, str};
 
 /// The action that the `rustc` shim should take in the current sequence of
 /// events.
@@ -44,6 +45,8 @@ enum Step {
     Error = b'e',
     /// Emits one suggested fix and an error.
     OneFixError = b'f',
+    /// Emits one diagnostic with two exclusive, overlapping suggestions.
+    TwoFixExclusive = b'x',
 }
 
 /// Verifies `cargo fix` behavior based on the given sequence of behaviors for
@@ -137,6 +140,9 @@ fn main() {
             output_suggestion(successful_count + 1);
             output_message("error", successful_count + 2);
             std::process::exit(1);
+        }
+        b'x' => {
+            output_exclusive_suggestions(successful_count + 1);
         }
         _ => panic!("unexpected sequence"),
     }
@@ -255,6 +261,112 @@ fn output_message(level: &str, count: usize) {
     .replace("\n", "");
     eprintln!("{json}");
 }
+
+fn output_exclusive_suggestions(count: usize) {
+    let json = format!(
+        r#"{{
+            "$message_type": "diagnostic",
+            "message": "rustc fix shim exclusive comment {count}",
+            "code": null,
+            "level": "warning",
+            "spans":
+            [
+                {{
+                    "file_name": "src/lib.rs",
+                    "byte_start": 13,
+                    "byte_end": 14,
+                    "line_start": 1,
+                    "line_end": 1,
+                    "column_start": 14,
+                    "column_end": 15,
+                    "is_primary": true,
+                    "text":
+                    [
+                        {{
+                            "text": "// fix-count 0",
+                            "highlight_start": 14,
+                            "highlight_end": 15
+                        }}
+                    ],
+                    "label": "increase this number",
+                    "suggested_replacement": null,
+                    "suggestion_applicability": null,
+                    "expansion": null
+                }}
+            ],
+            "children":
+            [
+                {{
+                    "message": "try this",
+                    "code": null,
+                    "level": "help",
+                    "spans":
+                    [
+                        {{
+                            "file_name": "src/lib.rs",
+                            "byte_start": 13,
+                            "byte_end": 14,
+                            "line_start": 1,
+                            "line_end": 1,
+                            "column_start": 14,
+                            "column_end": 15,
+                            "is_primary": true,
+                            "text":
+                            [
+                                {{
+                                    "text": "// fix-count 0",
+                                    "highlight_start": 14,
+                                    "highlight_end": 15
+                                }}
+                            ],
+                            "label": null,
+                            "suggested_replacement": "{count}a",
+                            "suggestion_applicability": "MachineApplicable",
+                            "expansion": null
+                        }}
+                    ],
+                    "children": [],
+                    "rendered": null
+                }},
+                {{
+                    "message": "or try this",
+                    "code": null,
+                    "level": "help",
+                    "spans":
+                    [
+                        {{
+                            "file_name": "src/lib.rs",
+                            "byte_start": 13,
+                            "byte_end": 14,
+                            "line_start": 1,
+                            "line_end": 1,
+                            "column_start": 14,
+                            "column_end": 15,
+                            "is_primary": true,
+                            "text":
+                            [
+                                {{
+                                    "text": "// fix-count 0",
+                                    "highlight_start": 14,
+                                    "highlight_end": 15
+                                }}
+                            ],
+                            "label": null,
+                            "suggested_replacement": "{count}b",
+                            "suggestion_applicability": "MachineApplicable",
+                            "expansion": null
+                        }}
+                    ],
+                    "children": [],
+                    "rendered": null
+                }}
+            ],
+            "rendered": "rustc fix shim exclusive comment {count}"
+        }}"#,
+    )
+    .replace("\n", "");
+    eprintln!("{json}");
+}
             "##,
         )
         .build();
@@ -326,21 +438,11 @@ fn fix_overlapping_max() {
         |_execs| {},
         str![[r#"
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
-[WARNING] error applying suggestions to `src/lib.rs`
-
-The full error message was:
-
-> cannot replace slice of data that was already replaced
-
-This likely indicates a bug in either rustc or cargo itself,
-and we would appreciate a bug report! You're likely to see
-a number of compiler warnings after this message which cargo
-attempted to fix but failed. If you could open an issue at
-https://github.com/rust-lang/rust/issues
-quoting the full output of this command we'd be very appreciative!
-Note that you may be able to make some more progress in the near-term
-fixing code with the `--broken-code` flag
-
+[ERROR] error applying suggestions
+ --> src/lib.rs
+  = cause: cannot replace slice of data that was already replaced
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
 [FIXED] src/lib.rs (4 fixes)
 rustc fix shim comment 5
 rustc fix shim comment 6
@@ -361,25 +463,12 @@ fn fix_verification_failed() {
         |_execs| {},
         str![[r#"
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
-[WARNING] failed to automatically apply fixes suggested by rustc to crate `foo`
-
-after fixes were automatically applied the compiler reported errors within these files:
-
-  * src/lib.rs
-
-This likely indicates a bug in either rustc or cargo itself,
-and we would appreciate a bug report! You're likely to see
-a number of compiler warnings after this message which cargo
-attempted to fix but failed. If you could open an issue at
-https://github.com/rust-lang/rust/issues
-quoting the full output of this command we'd be very appreciative!
-Note that you may be able to make some more progress in the near-term
-fixing code with the `--broken-code` flag
-
-The following errors were reported:
-rustc fix shim error count=2
-Original diagnostics will follow.
-
+[ERROR] errors present after applying fixes to crate `foo`
+ --> src/lib.rs
+  = cause: rustc fix shim error count=2
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
+[NOTE] original diagnostics will follow:
 rustc fix shim comment 1
 [WARNING] `foo` (lib) generated 1 warning (run `cargo fix --lib -p foo` to apply 1 suggestion)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -401,25 +490,12 @@ fn fix_verification_failed_clippy() {
         },
         str![[r#"
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
-[WARNING] failed to automatically apply fixes suggested by rustc to crate `foo`
-
-after fixes were automatically applied the compiler reported errors within these files:
-
-  * src/lib.rs
-
-This likely indicates a bug in either rustc or cargo itself,
-and we would appreciate a bug report! You're likely to see
-a number of compiler warnings after this message which cargo
-attempted to fix but failed. If you could open an issue at
-https://github.com/rust-lang/rust-clippy/issues
-quoting the full output of this command we'd be very appreciative!
-Note that you may be able to make some more progress in the near-term
-fixing code with the `--broken-code` flag
-
-The following errors were reported:
-rustc fix shim error count=2
-Original diagnostics will follow.
-
+[ERROR] errors present after applying fixes to crate `foo`
+ --> src/lib.rs
+  = cause: rustc fix shim error count=2
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust-clippy/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
+[NOTE] original diagnostics will follow:
 rustc fix shim comment 1
 [WARNING] `foo` (lib) generated 1 warning (run `cargo clippy --fix --lib -p foo` to apply 1 suggestion)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -492,25 +568,12 @@ fn broken_code_one_suggestion() {
         },
         str![[r#"
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
-[WARNING] failed to automatically apply fixes suggested by rustc to crate `foo`
-
-after fixes were automatically applied the compiler reported errors within these files:
-
-  * src/lib.rs
-
-This likely indicates a bug in either rustc or cargo itself,
-and we would appreciate a bug report! You're likely to see
-a number of compiler warnings after this message which cargo
-attempted to fix but failed. If you could open an issue at
-https://github.com/rust-lang/rust/issues
-quoting the full output of this command we'd be very appreciative!
-Note that you may be able to make some more progress in the near-term
-fixing code with the `--broken-code` flag
-
-The following errors were reported:
-rustc fix shim error count=2
-Original diagnostics will follow.
-
+[ERROR] errors present after applying fixes to crate `foo`
+ --> src/lib.rs
+  = cause: rustc fix shim error count=2
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
+[NOTE] original diagnostics will follow:
 rustc fix shim comment 1
 rustc fix shim error count=2
 [WARNING] `foo` (lib) generated 1 warning
@@ -518,5 +581,33 @@ rustc fix shim error count=2
 
 "#]],
         "// fix-count 1",
+    );
+}
+
+#[cargo_test]
+fn fix_exclusive_suggestions() {
+    // One diagnostic with two exclusive suggestions for the same span.
+    // Currently, rustfix fails with a generic `AlreadyReplaced` error
+    // ("cannot replace slice of data that was already replaced") when it
+    // encounters this.
+    expect_fix_runs_rustc_n_times(
+        &[Step::TwoFixExclusive],
+        |execs| {
+            execs.with_status(0);
+        },
+        str![[r#"
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[ERROR] error applying suggestions
+ --> src/lib.rs
+  = cause: cannot replace slice of data that was already replaced
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
+[FIXED] src/lib.rs (0 fixes)
+[..]
+[WARNING] `foo` (lib) generated 1 warning (run `cargo fix --lib -p foo` to apply 1 suggestion)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]],
+        "// fix-count 0",
     );
 }

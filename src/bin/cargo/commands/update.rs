@@ -41,7 +41,7 @@ pub fn cli() -> Command {
         .arg(
             flag(
                 "breaking",
-                "Update [SPEC] to latest SemVer-breaking version (unstable)",
+                "Update [SPEC] to highest SemVer-breaking version (unstable)",
             )
             .short('b'),
         )
@@ -52,10 +52,9 @@ pub fn cli() -> Command {
                 .help_heading(heading::PACKAGE_SELECTION),
         )
         .arg_manifest_path()
-        .arg_lockfile_path()
         .arg_ignore_rust_version_with_help("Ignore `rust-version` specification in packages")
         .after_help(color_print::cstr!(
-            "Run `<cyan,bold>cargo help update</>` for more detailed information.\n"
+            "Run `<bright-cyan,bold>cargo help update</>` for more detailed information.\n"
         ))
 }
 

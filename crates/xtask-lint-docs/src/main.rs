@@ -1,8 +1,10 @@
-use cargo::util::command_prelude::{flag, ArgMatchesExt};
-use cargo::util::lints::{Lint, LintLevel};
-use itertools::Itertools;
 use std::fmt::Write;
 use std::path::PathBuf;
+
+use cargo::diagnostics::Lint;
+use cargo::diagnostics::LintLevel;
+use cargo::util::command_prelude::{ArgMatchesExt, flag};
+use itertools::Itertools;
 
 fn cli() -> clap::Command {
     clap::Command::new("xtask-lint-docs").arg(flag("check", "Check that the docs are up-to-date"))
@@ -18,12 +20,12 @@ fn main() -> anyhow::Result<()> {
     let mut forbid = Vec::new();
 
     let mut lint_docs = String::new();
-    for lint in cargo::util::lints::LINTS
+    for lint in cargo::diagnostics::LINTS
         .iter()
         .sorted_by_key(|lint| lint.name)
     {
         if lint.docs.is_some() {
-            let sectipn = match lint.default_level {
+            let sectipn = match lint.primary_group.default_level {
                 LintLevel::Allow => &mut allow,
                 LintLevel::Warn => &mut warn,
                 LintLevel::Deny => &mut deny,
@@ -38,9 +40,20 @@ fn main() -> anyhow::Result<()> {
     writeln!(buf, "# Lints\n")?;
     writeln!(
         buf,
-        "Note: [Cargo's linting system is unstable](unstable.md#lintscargo) and can only be used on nightly toolchains"
+        "> [!NOTE]
+> This chapter is about lints emitted by `cargo` itself.
+>
+> See [the lints section in the Manifest Format
+> chapter](manifest.md#the-lints-section) to configure lint levels for tools
+> such as `rustc` or `clippy`.
+
+> [!WARNING]
+> [Cargo's linting system is unstable](unstable.md#lintscargo) and can only be used on nightly
+> toolchains."
     )?;
     writeln!(buf)?;
+
+    lint_groups(&mut buf)?;
 
     if !allow.is_empty() {
         add_level_section(LintLevel::Allow, &allow, &mut buf)?;
@@ -57,6 +70,9 @@ fn main() -> anyhow::Result<()> {
 
     buf.push_str(&lint_docs);
 
+    writeln!(buf)?;
+    writeln!(buf, "[`package.rust-version`]: rust-version.md")?;
+
     if check {
         let old = std::fs::read_to_string(lint_docs_path())?;
         if old != buf {
@@ -70,9 +86,60 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn lint_groups(buf: &mut String) -> anyhow::Result<()> {
+    let (max_name_len, max_desc_len) = cargo::diagnostics::LINT_GROUPS
+        .iter()
+        .filter(|g| !g.hidden)
+        .fold((0, 0), |(max_name_len, max_desc_len), group| {
+            // We add 9 to account for the "cargo::" prefix and backticks
+            let name_len = group.name.chars().count() + 9;
+            let desc_len = group.desc.chars().count();
+            (max_name_len.max(name_len), max_desc_len.max(desc_len))
+        });
+    let default_level_len = "Default level".chars().count();
+    writeln!(buf, "\n")?;
+    writeln!(
+        buf,
+        "| {:<max_name_len$} | {:<max_desc_len$} | Default level |",
+        "Group", "Description",
+    )?;
+    writeln!(
+        buf,
+        "|-{}-|-{}-|-{}-|",
+        "-".repeat(max_name_len),
+        "-".repeat(max_desc_len),
+        "-".repeat(default_level_len)
+    )?;
+    for group in cargo::diagnostics::LINT_GROUPS.iter() {
+        if group.hidden {
+            continue;
+        }
+        let group_name = format!("`cargo::{}`", group.name);
+        // HACK: `default` is a secondary group without its own level
+        let group_level = if group.name == "default" {
+            "warn/deny".to_owned()
+        } else {
+            group.default_level.to_string()
+        };
+        writeln!(
+            buf,
+            "| {:<max_name_len$} | {:<max_desc_len$} | {:<default_level_len$} |",
+            group_name, group.desc, group_level,
+        )?;
+    }
+    writeln!(buf, "\n")?;
+    Ok(())
+}
+
 fn add_lint(lint: &Lint, buf: &mut String) -> std::fmt::Result {
     writeln!(buf, "## `{}`", lint.name)?;
-    writeln!(buf, "Set to `{}` by default", lint.default_level)?;
+    writeln!(buf)?;
+    writeln!(buf, "- Group: `{}`", lint.primary_group.name)?;
+    writeln!(buf, "- Level: `{}`", lint.primary_group.default_level)?;
+    if let Some(msrv) = &lint.msrv {
+        writeln!(buf, "- Minimal [`package.rust-version`]: `{msrv}`")?;
+    }
+    writeln!(buf)?;
     writeln!(buf, "{}\n", lint.docs.as_ref().unwrap())
 }
 
@@ -101,7 +168,7 @@ fn lint_docs_path() -> PathBuf {
     let pkg_root = env!("CARGO_MANIFEST_DIR");
     let ws_root = PathBuf::from(format!("{pkg_root}/../.."));
     let path = {
-        let path = ws_root.join("src/doc/src/reference/lints.md");
+        let path = ws_root.join("doc/book/src/reference/lints.md");
         path.canonicalize().unwrap_or(path)
     };
     path

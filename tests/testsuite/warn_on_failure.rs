@@ -1,8 +1,8 @@
 //! Tests for whether or not warnings are displayed for build scripts.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::Package;
-use cargo_test_support::{project, str, Project};
+use cargo_test_support::{Project, project, str};
 
 static WARNING1: &str = "Hello! I'm a warning. :)";
 static WARNING2: &str = "And one more!";
@@ -66,7 +66,7 @@ fn no_warning_on_success() {
         .cargo("build")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -87,7 +87,7 @@ fn no_warning_on_bin_failure() {
         .with_stdout_does_not_contain("hidden stdout")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1
@@ -110,7 +110,7 @@ fn warning_on_lib_failure() {
         .with_stdout_does_not_contain("hidden stdout")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `dummy-registry`)
 [COMPILING] bar v0.0.1

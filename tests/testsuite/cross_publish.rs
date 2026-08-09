@@ -2,12 +2,13 @@
 
 use std::fs::File;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use crate::utils::cross_compile::disabled as cross_compile_disabled;
 use cargo_test_support::{cross_compile, project, publish, registry, str};
 
 #[cargo_test]
 fn simple_cross_package() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
     let p = project()
@@ -64,7 +65,7 @@ fn simple_cross_package() {
 
 #[cargo_test]
 fn publish_with_target() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -114,8 +115,8 @@ fn publish_with_target() {
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] foo v0.0.0 ([ROOT]/foo)
 [UPLOADED] foo v0.0.0 to registry `crates-io`
-[NOTE] waiting for `foo v0.0.0` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for foo v0.0.0 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.0.0 at registry `crates-io`
 
 "#]])

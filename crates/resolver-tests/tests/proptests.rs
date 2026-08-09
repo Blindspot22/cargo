@@ -4,10 +4,10 @@ use cargo::util::GlobalContext;
 use cargo_util::is_ci;
 
 use resolver_tests::{
+    PrettyPrintRegistry,
     helpers::{dep_req, registry, remove_dep},
     registry_strategy, resolve, resolve_and_validated, resolve_with_global_context,
     sat::SatResolver,
-    PrettyPrintRegistry,
 };
 
 use proptest::prelude::*;
@@ -205,9 +205,7 @@ proptest! {
                     // If resolution was successful, then unpublishing a version of a crate
                     // that was not selected should not change that.
                     let not_selected: Vec<_> = input
-                        .iter()
-                        .cloned()
-                        .filter(|x| !r.contains(&x.package_id()))
+                        .iter().filter(|&x| !r.contains(&x.package_id())).cloned()
                         .collect();
 
                     if !not_selected.is_empty() {
@@ -215,9 +213,7 @@ proptest! {
 
                         let new_reg = registry(
                             input
-                                .iter()
-                                .cloned()
-                                .filter(|x| !indexes_to_unpublish.contains(&x))
+                                .iter().filter(|&x| !indexes_to_unpublish.contains(&x)).cloned()
                                 .collect(),
                         );
 
@@ -248,9 +244,7 @@ proptest! {
 
                     let new_reg = registry(
                         input
-                            .iter()
-                            .cloned()
-                            .filter(|x| !indexes_to_unpublish.contains(&x))
+                            .iter().filter(|&x| !indexes_to_unpublish.contains(&x)).cloned()
                             .collect(),
                     );
 

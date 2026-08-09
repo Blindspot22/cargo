@@ -2,8 +2,8 @@
 
 use std::fs;
 
+use crate::prelude::*;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
 use cargo_test_support::{basic_lib_manifest, basic_manifest, main_file, project};
@@ -75,7 +75,7 @@ fn cargo_compile_with_nested_deps_shorthand() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] baz v0.5.0 ([ROOT]/foo/bar/baz)
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
@@ -160,7 +160,7 @@ fn cargo_compile_with_root_dev_deps() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] foo v0.5.0 ([ROOT]/foo)
 error[E0463]: can't find crate for `bar`
 ...
@@ -207,7 +207,7 @@ fn cargo_compile_with_root_dev_deps_with_testing() {
 
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.5.0 ([ROOT]/bar)
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -276,7 +276,7 @@ fn cargo_compile_with_transitive_dev_deps() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -318,7 +318,7 @@ fn no_rebuild_dependency() {
     // First time around we should compile both foo and bar
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] bar v0.5.0 ([ROOT]/foo/bar)
 [CHECKING] foo v0.5.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -387,7 +387,7 @@ fn deep_dependencies_trigger_rebuild() {
         .build();
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] baz v0.5.0 ([ROOT]/foo/baz)
 [CHECKING] bar v0.5.0 ([ROOT]/foo/bar)
 [CHECKING] foo v0.5.0 ([ROOT]/foo)
@@ -481,7 +481,7 @@ fn no_rebuild_two_deps() {
         .build();
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] baz v0.5.0 ([ROOT]/foo/baz)
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
@@ -525,7 +525,7 @@ fn nested_deps_recompile() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] bar v0.5.0 ([ROOT]/foo/src/bar)
 [CHECKING] foo v0.5.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -571,19 +571,9 @@ fn error_message_for_missing_manifest() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] failed to get `bar` as a dependency of package `foo v0.5.0 ([ROOT]/foo)`
-
-Caused by:
-  failed to load source for dependency `bar`
-
-Caused by:
-  Unable to update [ROOT]/foo/src/bar
-
-Caused by:
-  failed to read `[ROOT]/foo/src/bar/Cargo.toml`
-
-Caused by:
-  [NOT_FOUND]
+[ERROR] no matching package named `bar` found
+location searched: [ROOT]/foo/src/bar
+required by package `foo v0.5.0 ([ROOT]/foo)`
 
 "#]])
         .run();
@@ -1097,13 +1087,12 @@ fn invalid_base() {
         .with_stderr_data(
             "\
 [ERROR] invalid character `^` in path base name: `^^not-valid^^`, the first character must be a Unicode XID start character (most letters or `_`)
-
-
+       
+       
   --> Cargo.toml:10:23
    |
 10 |                 bar = { base = '^^not-valid^^', path = 'bar' }
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
 ",
         )
         .run();
@@ -1140,23 +1129,12 @@ fn invalid_path_with_base() {
     p.cargo("build")
         .masquerade_as_nightly_cargo(&["path-bases"])
         .with_status(101)
-        .with_stderr_data(
-            "\
-[ERROR] failed to get `bar` as a dependency of package `foo v0.5.0 ([ROOT]/foo)`
+        .with_stderr_data(str![[r#"
+[ERROR] no matching package named `bar` found
+location searched: [ROOT]/foo/shared_proj/"
+required by package `foo v0.5.0 ([ROOT]/foo)`
 
-Caused by:
-  failed to load source for dependency `bar`
-
-Caused by:
-  Unable to update [ROOT]/foo/shared_proj/\"
-
-Caused by:
-  failed to read `[ROOT]/foo/shared_proj/\"/Cargo.toml`
-
-Caused by:
-  [NOT_FOUND]
-",
-        )
+"#]])
         .run();
 }
 
@@ -1385,7 +1363,7 @@ fn path_dep_build_cmd() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1455,7 +1433,7 @@ fn dev_deps_no_rebuild_lib() {
     p.cargo("build")
         .env("FOO", "bar")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1576,7 +1554,7 @@ fn override_and_depend() {
     p.cargo("check")
         .cwd("b")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] a2 v0.5.0 ([ROOT]/foo/a)
 [CHECKING] a1 v0.5.0 ([ROOT]/foo/a)
 [CHECKING] b v0.5.0 ([ROOT]/foo/b)
@@ -1671,11 +1649,10 @@ fn invalid_path_dep_in_workspace_with_lockfile() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] no matching package found
-searched package name: `bar`
-perhaps you meant:      foo
+[ERROR] no matching package named `bar` found
 location searched: [ROOT]/foo/foo
 required by package `foo v0.5.0 ([ROOT]/foo/foo)`
+[HELP] package `foo` exists at `[ROOT]/foo/foo`
 
 "#]])
         .run();
@@ -1755,21 +1732,11 @@ fn deep_path_error() {
     p.cargo("check")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] failed to get `c` as a dependency of package `b v0.1.0 ([ROOT]/foo/b)`
+[ERROR] no matching package named `c` found
+location searched: [ROOT]/foo/c
+required by package `b v0.1.0 ([ROOT]/foo/b)`
     ... which satisfies path dependency `b` of package `a v0.1.0 ([ROOT]/foo/a)`
     ... which satisfies path dependency `a` of package `foo v0.1.0 ([ROOT]/foo)`
-
-Caused by:
-  failed to load source for dependency `c`
-
-Caused by:
-  Unable to update [ROOT]/foo/c
-
-Caused by:
-  failed to read `[ROOT]/foo/c/Cargo.toml`
-
-Caused by:
-  [NOT_FOUND]
 
 "#]])
         .run();
@@ -1888,7 +1855,7 @@ fn same_name_version_changed() {
 
     p.cargo("tree")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .with_stdout_data(str![[r#"
@@ -1909,7 +1876,7 @@ foo v1.0.0 ([ROOT]/foo)
     );
     p.cargo("tree")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ADDING] foo v2.0.1 ([ROOT]/foo/foo2)
 
 "#]])
@@ -1918,5 +1885,136 @@ foo v1.0.0 ([ROOT]/foo)
 └── foo v2.0.1 ([ROOT]/foo/foo2)
 
 "#]])
+        .run();
+}
+
+#[cargo_test]
+fn path_dep_wrong_package_name() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2024"
+            [dependencies]
+            definitely_not_bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+            [package]
+            name = "bar"
+            version = "0.1.0"
+            edition = "2024"
+            "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(
+            "\
+[ERROR] no matching package named `definitely_not_bar` found
+location searched: [ROOT]/foo/bar
+required by package `foo v0.1.0 ([ROOT]/foo)`
+[HELP] package `bar` exists at `[ROOT]/foo/bar`
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn path_dep_package_in_subdirectory() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2024"
+            [dependencies]
+            definitely_not_bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "bar/definitely_not_bar/Cargo.toml",
+            r#"
+            [package]
+            name = "definitely_not_bar"
+            version = "0.1.0"
+            edition = "2024"
+            "#,
+        )
+        .file("bar/definitely_not_bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(
+            "\
+[ERROR] no matching package named `definitely_not_bar` found
+location searched: [ROOT]/foo/bar
+required by package `foo v0.1.0 ([ROOT]/foo)`
+[HELP] package `definitely_not_bar` exists at `[ROOT]/foo/bar/definitely_not_bar`
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn path_dep_other_packages_nearby() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2024"
+            [dependencies]
+            definitely_not_bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "bar/alice/Cargo.toml",
+            r#"
+            [package]
+            name = "alice"
+            version = "0.1.0"
+            edition = "2024"
+            "#,
+        )
+        .file("bar/alice/src/lib.rs", "")
+        .file(
+            "bar/bob/Cargo.toml",
+            r#"
+            [package]
+            name = "bob"
+            version = "0.1.0"
+            edition = "2024"
+            "#,
+        )
+        .file("bar/bob/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(
+            "\
+[ERROR] no matching package named `definitely_not_bar` found
+location searched: [ROOT]/foo/bar
+required by package `foo v0.1.0 ([ROOT]/foo)`
+[HELP] package `alice` exists at `[ROOT]/foo/bar/alice`
+[HELP] package `bob` exists at `[ROOT]/foo/bar/bob`
+",
+        )
         .run();
 }

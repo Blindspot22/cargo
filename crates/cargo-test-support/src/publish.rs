@@ -6,29 +6,6 @@
 //! # use cargo_test_support::registry::RegistryBuilder;
 //! # use cargo_test_support::publish::validate_upload;
 //! # use cargo_test_support::project;
-//! // This replaces `registry::init()` and must be called before `Package::new().publish()`
-//! let registry = RegistryBuilder::new().http_api().http_index().build();
-//!
-//! let p = project()
-//!     .file(
-//!         "Cargo.toml",
-//!         r#"
-//!             [package]
-//!             name = "foo"
-//!             version = "0.0.1"
-//!             edition = "2015"
-//!             authors = []
-//!             license = "MIT"
-//!             description = "foo"
-//!         "#,
-//!     )
-//!     .file("src/main.rs", "fn main() {}")
-//!     .build();
-//!
-//! p.cargo("publish --no-verify")
-//!     .replace_crates_io(registry.index_url())
-//!     .run();
-//!
 //! validate_upload(
 //!     r#"
 //!     {
@@ -58,13 +35,13 @@
 //! ```
 
 use crate::compare::InMemoryDir;
-use crate::registry::{self, alt_api_path, FeatureMap};
+use crate::registry::{self, FeatureMap, alt_api_path};
 use flate2::read::GzDecoder;
 use snapbox::prelude::*;
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
-use std::io::{self, prelude::*, SeekFrom};
+use std::io::{self, SeekFrom, prelude::*};
 use std::path::Path;
 use tar::Archive;
 
@@ -78,6 +55,7 @@ where
 }
 
 /// Check the `cargo publish` API call
+#[track_caller]
 pub fn validate_upload(expected_json: &str, expected_crate_name: &str, expected_files: &[&str]) {
     let new_path = registry::api_path().join("api/v1/crates/new");
     _validate_upload(
@@ -90,6 +68,7 @@ pub fn validate_upload(expected_json: &str, expected_crate_name: &str, expected_
 }
 
 /// Check the `cargo publish` API call, with file contents
+#[track_caller]
 pub fn validate_upload_with_contents(
     expected_json: &str,
     expected_crate_name: &str,
@@ -107,6 +86,7 @@ pub fn validate_upload_with_contents(
 }
 
 /// Check the `cargo publish` API call to the alternative test registry
+#[track_caller]
 pub fn validate_alt_upload(
     expected_json: &str,
     expected_crate_name: &str,
@@ -122,6 +102,7 @@ pub fn validate_alt_upload(
     );
 }
 
+#[track_caller]
 fn _validate_upload(
     new_path: &Path,
     expected_json: &str,
@@ -142,6 +123,7 @@ fn _validate_upload(
     );
 }
 
+#[track_caller]
 fn read_new_post(new_path: &Path) -> (Vec<u8>, Vec<u8>) {
     let mut f = File::open(new_path).unwrap();
 
@@ -166,10 +148,11 @@ fn read_new_post(new_path: &Path) -> (Vec<u8>, Vec<u8>) {
 ///
 /// - `expected_crate_name` should be something like `foo-0.0.1.crate`.
 /// - `expected_files` should be a complete list of files in the crate
-///   (relative to expected_crate_name).
+///   (relative to `expected_crate_name`).
 /// - `expected_contents` should be a list of `(file_name, contents)` tuples
 ///   to validate the contents of the given file. Only the listed files will
 ///   be checked (others will be ignored).
+#[track_caller]
 pub fn validate_crate_contents(
     reader: impl Read,
     expected_crate_name: &str,
@@ -185,6 +168,7 @@ pub fn validate_crate_contents(
     )
 }
 
+#[track_caller]
 fn validate_crate_contents_(
     reader: impl Read,
     expected_crate_name: &str,
@@ -192,10 +176,11 @@ fn validate_crate_contents_(
     expected_contents: InMemoryDir,
 ) {
     let mut rdr = GzDecoder::new(reader);
-    assert_eq!(
-        rdr.header().unwrap().filename().unwrap(),
-        expected_crate_name.as_bytes()
-    );
+    snapbox::assert_data_eq!(rdr.header().unwrap().filename().unwrap(), {
+        let expected: snapbox::Data = expected_crate_name.into();
+        expected.raw()
+    });
+
     let mut contents = Vec::new();
     rdr.read_to_end(&mut contents).unwrap();
     let mut ar = Archive::new(&contents[..]);
@@ -243,6 +228,7 @@ pub(crate) fn create_index_line(
     yanked: bool,
     links: Option<String>,
     rust_version: Option<&str>,
+    pubtime: Option<&str>,
     v: Option<u32>,
 ) -> String {
     // This emulates what crates.io does to retain backwards compatibility.
@@ -265,6 +251,9 @@ pub(crate) fn create_index_line(
     }
     if let Some(rust_version) = rust_version {
         json["rust_version"] = serde_json::json!(rust_version);
+    }
+    if let Some(pubtime) = pubtime {
+        json["pubtime"] = serde_json::json!(pubtime);
     }
 
     json.to_string()
@@ -314,7 +303,7 @@ fn split_index_features(mut features: FeatureMap) -> (FeatureMap, Option<Feature
             .iter()
             .any(|value| value.starts_with("dep:") || value.contains("?/"))
         {
-            let new_values = values.drain(..).collect();
+            let new_values = std::mem::take(values);
             features2.insert(feat.clone(), new_values);
         }
     }

@@ -1,11 +1,11 @@
 use benchsuite::fixtures;
-use cargo::core::compiler::{CompileKind, RustcTargetData};
-use cargo::core::resolver::features::{FeatureOpts, FeatureResolver};
-use cargo::core::resolver::{CliFeatures, ForceAllTargets, HasDevUnits, ResolveBehavior};
-use cargo::core::{PackageIdSpec, Workspace};
-use cargo::ops::WorkspaceResolve;
 use cargo::GlobalContext;
-use criterion::{criterion_group, criterion_main, Criterion};
+use cargo::compiler::{CompileKind, RustcTargetData};
+use cargo::ops::WorkspaceResolve;
+use cargo::resolver::features::{FeatureOpts, FeatureResolver};
+use cargo::resolver::{CliFeatures, ForceAllTargets, HasDevUnits, ResolveBehavior};
+use cargo::workspace::{PackageIdSpec, Workspace};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::Path;
 
 struct ResolveInfo<'gctx> {

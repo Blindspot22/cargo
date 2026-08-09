@@ -1,8 +1,8 @@
 //! Tests for renaming dependencies.
 
+use crate::prelude::*;
 use cargo_test_support::git;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{basic_manifest, project, str};
 
@@ -192,7 +192,7 @@ fn rename_twice() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.1.0 (registry `dummy-registry`)
 [ERROR] the crate `test v0.1.0 ([ROOT]/foo)` depends on crate `foo v0.1.0` multiple times with different names

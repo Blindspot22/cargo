@@ -61,7 +61,7 @@ pub(crate) fn validate_name(name: &str, what: &'static str) -> Result<()> {
             }
             .into());
         }
-        if !(unicode_xid::UnicodeXID::is_xid_start(ch) || ch == '_') {
+        if !(unicode_ident::is_xid_start(ch) || ch == '_') {
             return Err(ErrorKind::InvalidCharacter {
                 ch,
                 what,
@@ -73,7 +73,7 @@ pub(crate) fn validate_name(name: &str, what: &'static str) -> Result<()> {
         }
     }
     for ch in chars {
-        if !(unicode_xid::UnicodeXID::is_xid_continue(ch) || ch == '-') {
+        if !(unicode_ident::is_xid_continue(ch) || ch == '-') {
             return Err(ErrorKind::InvalidCharacter {
                 ch,
                 what,
@@ -103,13 +103,13 @@ pub(crate) fn sanitize_name(name: &str, placeholder: char) -> String {
     let mut slug = String::new();
     let mut chars = name.chars();
     while let Some(ch) = chars.next() {
-        if (unicode_xid::UnicodeXID::is_xid_start(ch) || ch == '_') && !ch.is_digit(10) {
+        if (unicode_ident::is_xid_start(ch) || ch == '_') && !ch.is_digit(10) {
             slug.push(ch);
             break;
         }
     }
     while let Some(ch) = chars.next() {
-        if unicode_xid::UnicodeXID::is_xid_continue(ch) || ch == '-' {
+        if unicode_ident::is_xid_continue(ch) || ch == '-' {
             slug.push(ch);
         } else {
             slug.push(placeholder);
@@ -137,14 +137,6 @@ pub(crate) fn validate_profile_name(name: &str) -> Result<()> {
     }
 
     let lower_name = name.to_lowercase();
-    if lower_name == "debug" {
-        return Err(ErrorKind::ProfileNameReservedKeyword {
-            name: name.into(),
-            help: "To configure the default development profile, \
-                use the name `dev` as in [profile.dev]",
-        }
-        .into());
-    }
     if lower_name == "build-override" {
         return Err(ErrorKind::ProfileNameReservedKeyword {
             name: name.into(),
@@ -212,7 +204,7 @@ pub(crate) fn validate_feature_name(name: &str) -> Result<()> {
     }
     let mut chars = name.chars();
     if let Some(ch) = chars.next() {
-        if !(unicode_xid::UnicodeXID::is_xid_start(ch) || ch == '_' || ch.is_digit(10)) {
+        if !(unicode_ident::is_xid_start(ch) || ch == '_' || ch.is_digit(10)) {
             return Err(ErrorKind::InvalidCharacter {
                 ch,
                 what,
@@ -224,7 +216,7 @@ pub(crate) fn validate_feature_name(name: &str) -> Result<()> {
         }
     }
     for ch in chars {
-        if !(unicode_xid::UnicodeXID::is_xid_continue(ch) || ch == '-' || ch == '+' || ch == '.') {
+        if !(unicode_ident::is_xid_continue(ch) || ch == '-' || ch == '+' || ch == '.') {
             return Err(ErrorKind::InvalidCharacter {
                 ch,
                 what,

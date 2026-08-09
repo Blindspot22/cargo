@@ -2,9 +2,9 @@
 //!
 //! Tests for message caching can be found in `cache_messages`.
 
+use crate::prelude::*;
 use cargo_test_support::compare::assert_e2e;
-use cargo_test_support::prelude::*;
-use cargo_test_support::{process, project, Project};
+use cargo_test_support::{Project, process, project};
 use cargo_util::ProcessError;
 
 /// Captures the actual diagnostics displayed by rustc. This is done to avoid

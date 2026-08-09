@@ -1,8 +1,9 @@
 //! Tests for credential-process.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use crate::utils::cargo_process;
 use cargo_test_support::registry::{Package, TestRegistry};
-use cargo_test_support::{basic_manifest, cargo_process, paths, project, registry, str, Project};
+use cargo_test_support::{Project, basic_manifest, paths, project, registry, str};
 
 fn toml_bin(proj: &Project, name: &str) -> String {
     proj.bin(name).display().to_string().replace('\\', "\\\\")
@@ -75,14 +76,40 @@ fn publish() {
 [UPDATING] `alternative` index
 {"v":1,"registry":{"index-url":"[..]","name":"alternative","headers":[..]},"kind":"get","operation":"read"}
 [PACKAGING] foo v0.1.0 ([ROOT]/foo)
-[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 [UPLOADING] foo v0.1.0 ([ROOT]/foo)
 {"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.0","cksum":"[..]"}
 [UPLOADED] foo v0.1.0 to registry `alternative`
-[NOTE] waiting for `foo v0.1.0` to be available at registry `alternative`.
-You may press ctrl-c [..]
+[NOTE] waiting for foo v0.1.0 to be available at registry `alternative`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.1.0 at registry `alternative`
 
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn credential_provider_auth_failure() {
+    let _reg = registry::RegistryBuilder::new()
+        .http_index()
+        .auth_required()
+        .alternative()
+        .no_configure_token()
+        .credential_provider(&["cargo:token-from-stdout", "true"])
+        .build();
+
+    cargo_process("install libc --registry=alternative")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[UPDATING] `alternative` index
+[ERROR] token rejected for `alternative`
+You may need to log in using this registry's credential provider
+[NOTE] the token does not include an authentication scheme
+
+Caused by:
+  failed to get successful HTTP response from [..]
+  body:
+  [..]
 "#]])
         .run();
 }
@@ -95,7 +122,8 @@ fn basic_unsupported() {
         .credential_provider(&["cargo:token-from-stdout", "false"])
         .build();
 
-    cargo_process("login abcdefg")
+    cargo_process("login")
+        .with_stdin("abcdefg")
         .replace_crates_io(registry.index_url())
         .with_status(101)
         .with_stderr_data(str![[r#"
@@ -132,7 +160,8 @@ fn login() {
         ])
         .build();
 
-    cargo_process("login abcdefg -- cmd3 --cmd4")
+    cargo_process("login -- cmd3 --cmd4")
+        .with_stdin("abcdefg")
         .replace_crates_io(registry.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
@@ -309,7 +338,7 @@ fn all_not_found() {
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
 [CREDENTIAL] [..]not_found[..] get crates-io
-{"v":1,"registry":{"index-url":"[..]","name":"crates-io","headers":[[..]"WWW-Authenticate: Cargo login_url=/"https://test-registry-login/me/""[..]]},"kind":"get","operation":"read"}
+{"v":1,"registry":{"index-url":"[..]","name":"crates-io","headers":[[..]"www-authenticate: Cargo login_url=/"https://test-registry-login/me/""[..]]},"kind":"get","operation":"read"}
 [ERROR] no token found, please run `cargo login`
 
 "#]])
@@ -345,7 +374,7 @@ fn all_not_supported() {
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
 [CREDENTIAL] [..]not_supported[..] get crates-io
-{"v":1,"registry":{"index-url":"[..]","name":"crates-io","headers":[[..]"WWW-Authenticate: Cargo login_url=/"https://test-registry-login/me/""[..]]},"kind":"get","operation":"read"}
+{"v":1,"registry":{"index-url":"[..]","name":"crates-io","headers":[[..]"www-authenticate: Cargo login_url=/"https://test-registry-login/me/""[..]]},"kind":"get","operation":"read"}
 [ERROR] no credential providers could handle the request
 
 "#]])
@@ -383,7 +412,8 @@ fn multiple_providers() {
     )
     .unwrap();
 
-    cargo_process("login -v abcdefg")
+    cargo_process("login -v")
+    .with_stdin("abcdefg")
         .replace_crates_io(server.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
@@ -429,7 +459,8 @@ fn registry_provider_overrides_global() {
     )
     .unwrap();
 
-    cargo_process("login -v abcdefg")
+    cargo_process("login -v")
+        .with_stdin("abcdefg")
         .env("CARGO_REGISTRY_CREDENTIAL_PROVIDER", "cargo:token")
         .replace_crates_io(server.index_url())
         .with_stderr_data(str![[r#"
@@ -460,7 +491,7 @@ fn both_asymmetric_and_token() {
     )
     .unwrap();
 
-    cargo_process("login -Zasymmetric-token -v abcdefg")
+    cargo_process("login -Zasymmetric-token -v").with_stdin("abcdefg")
         .masquerade_as_nightly_cargo(&["asymmetric-token"])
         .replace_crates_io(server.index_url())
         .with_stderr_data(str![[r#"
@@ -525,17 +556,19 @@ fn token_caching() {
         .file("src/lib.rs", "")
         .build();
 
-    let output = r#"[UPDATING] `alternative` index
+    let output = str![[r#"
+[UPDATING] `alternative` index
 {"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"read"}
 [PACKAGING] foo v0.1.0 ([ROOT]/foo)
-[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 [UPLOADING] foo v0.1.0 ([ROOT]/foo)
 {"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.0","cksum":"[..]"}
 [UPLOADED] foo v0.1.0 to registry `alternative`
 [NOTE] waiting [..]
-You may press ctrl-c [..]
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.1.0 at registry `alternative`
-"#;
+
+"#]];
 
     // The output should contain two JSON messages from the provider in both cases:
     // The first because the credential is expired, the second because the provider
@@ -544,17 +577,19 @@ You may press ctrl-c [..]
         .with_stderr_data(output)
         .run();
 
-    let output_non_independent = r#"[UPDATING] `alternative` index
+    let output_non_independent = str![[r#"
+[UPDATING] `alternative` index
 {"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"read"}
 [PACKAGING] foo v0.1.1 ([ROOT]/foo)
-[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 [UPLOADING] foo v0.1.1 ([ROOT]/foo)
 {"v":1,"registry":{"index-url":"[..]","name":"alternative"},"kind":"get","operation":"publish","name":"foo","vers":"0.1.1","cksum":"[..]"}
 [UPLOADED] foo v0.1.1 to registry `alternative`
 [NOTE] waiting [..]
-You may press ctrl-c [..]
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.1.1 at registry `alternative`
-"#;
+
+"#]];
 
     p.change_file(
         "Cargo.toml",
@@ -595,7 +630,7 @@ fn basic_provider() {
             eprintln!("CARGO={:?}", std::env::var("CARGO").ok());
             eprintln!("CARGO_REGISTRY_NAME_OPT={:?}", std::env::var("CARGO_REGISTRY_NAME_OPT").ok());
             eprintln!("CARGO_REGISTRY_INDEX_URL={:?}", std::env::var("CARGO_REGISTRY_INDEX_URL").ok());
-            print!("sekrit"); 
+            print!("sekrit");
         }"#)
         .build();
     cred_proj.cargo("build").run();
@@ -635,10 +670,67 @@ fn basic_provider() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 CARGO=Some([..])
 CARGO_REGISTRY_NAME_OPT=Some("alternative")
 CARGO_REGISTRY_INDEX_URL=Some("[ROOTURL]/alternative-registry")
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.0.1 (registry `alternative`)
+[CHECKING] bar v0.0.1 (registry `alternative`)
+[CHECKING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn basic_provider_crlf() {
+    // Helpers on Windows commonly emit a token terminated by `\r\n`.
+    let cred_proj = project()
+        .at("cred_proj")
+        .file("Cargo.toml", &basic_manifest("test-cred", "1.0.0"))
+        .file("src/main.rs", r#"fn main() { print!("sekrit\r\n"); }"#)
+        .build();
+    cred_proj.cargo("build").run();
+
+    let _server = registry::RegistryBuilder::new()
+        .no_configure_token()
+        .credential_provider(&[
+            "cargo:token-from-stdout",
+            &toml_bin(&cred_proj, "test-cred"),
+        ])
+        .token(cargo_test_support::registry::Token::Plaintext(
+            "sekrit".to_string(),
+        ))
+        .alternative()
+        .http_api()
+        .http_index()
+        .auth_required()
+        .build();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+                [dependencies.bar]
+                version = "0.0.1"
+                registry = "alternative"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+    Package::new("bar", "0.0.1").alternative(true).publish();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[UPDATING] `alternative` index
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.0.1 (registry `alternative`)
 [CHECKING] bar v0.0.1 (registry `alternative`)
@@ -675,7 +767,8 @@ fn unsupported_version() {
         .credential_provider(&[&provider])
         .build();
 
-    cargo_process("login abcdefg")
+    cargo_process("login")
+        .with_stdin("abcdefg")
         .replace_crates_io(registry.index_url())
         .with_status(101)
         .with_stderr_data(str![[r#"
@@ -707,7 +800,8 @@ fn alias_builtin_warning() {
     )
     .unwrap();
 
-    cargo_process("login abcdefg")
+    cargo_process("login")
+        .with_stdin("abcdefg")
         .replace_crates_io(registry.index_url())
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index

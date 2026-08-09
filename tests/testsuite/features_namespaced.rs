@@ -1,6 +1,6 @@
 //! Tests for namespaced features.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::{Dependency, Package, RegistryBuilder};
 use cargo_test_support::str;
 use cargo_test_support::{project, publish};
@@ -32,18 +32,21 @@ fn dependency_with_crate_syntax() {
         .build();
 
     p.cargo("check")
-        .with_stderr_data(str![[r#"
+        .with_stderr_data(
+            str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] baz v1.0.0 (registry `dummy-registry`)
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
+[DOWNLOADED] baz v1.0.0 (registry `dummy-registry`)
 [CHECKING] baz v1.0.0
 [CHECKING] bar v1.0.0
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -74,6 +77,8 @@ fn namespaced_invalid_feature() {
 
 Caused by:
   feature `bar` includes `baz` which is neither a dependency nor another feature
+
+  [HELP] a feature with a similar name exists: `bar`
 
 "#]])
         .run();
@@ -172,7 +177,7 @@ fn namespaced_implicit_feature() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -321,7 +326,7 @@ fn namespaced_same_name() {
     p.cargo("run")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `target/debug/foo[EXE]`
@@ -385,7 +390,7 @@ fn no_implicit_feature() {
     p.cargo("run")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `target/debug/foo[EXE]`
@@ -417,7 +422,11 @@ regex
 
     p.cargo("run --features lazy_static")
         .with_stderr_data(str![[r#"
-[ERROR] Package `foo v0.1.0 ([ROOT]/foo)` does not have feature `lazy_static`. It has an optional dependency with that name, but that dependency uses the "dep:" syntax in the features table, so it does not have an implicit feature with that name.
+[ERROR] package `foo v0.1.0 ([ROOT]/foo)` does not have feature `lazy_static`
+
+[HELP] an optional dependency with that name exists, but the `features` table includes it with the "dep:" syntax so it does not have an implicit feature with that name
+Dependency `lazy_static` would be enabled by these features:
+	- `regex`
 
 "#]])
         .with_status(101)
@@ -455,7 +464,6 @@ fn crate_syntax_bad_name() {
    |
 11 |                 "dep:bar" = []
    |                 ^^^^^^^^^
-   |
 
 "#]])
         .run();
@@ -563,7 +571,7 @@ fn crate_required_features() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ERROR] invalid feature `dep:bar` in required-features of target `foo`: `dep:` prefixed feature values are not allowed in required-features
 
 "#]])
@@ -629,6 +637,7 @@ fn json_exposed() {
   ],
   "resolve": null,
   "target_directory": "[ROOT]/foo/target",
+  "build_directory": "[ROOT]/foo/target",
   "version": 1,
   "workspace_default_members": [
     "path+[ROOTURL]/foo#0.1.0"
@@ -692,7 +701,7 @@ fn crate_feature_with_explicit() {
     p.cargo("check --features f1")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
 [CHECKING] bar v1.0.0
@@ -920,11 +929,12 @@ fn publish_no_implicit() {
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
 [PACKAGING] foo v0.1.0 ([ROOT]/foo)
-[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[UPDATING] crates.io index
+[PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 [UPLOADING] foo v0.1.0 ([ROOT]/foo)
 [UPLOADED] foo v0.1.0 to registry `crates-io`
-[NOTE] waiting for `foo v0.1.0` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for foo v0.1.0 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.1.0 at registry `crates-io`
 
 "#]])
@@ -975,7 +985,7 @@ You may press ctrl-c to skip waiting; the crate should be available shortly.
           }
         "#,
         "foo-0.1.0.crate",
-        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
+        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs", "Cargo.lock"],
         [(
             "Cargo.toml",
             str![[r##"
@@ -1005,6 +1015,9 @@ homepage = "https://example.com/"
 readme = false
 license = "MIT"
 
+[features]
+feat = ["opt-dep1"]
+
 [lib]
 name = "foo"
 path = "src/lib.rs"
@@ -1016,9 +1029,6 @@ optional = true
 [dependencies.opt-dep2]
 version = "1.0"
 optional = true
-
-[features]
-feat = ["opt-dep1"]
 
 "##]],
         )],
@@ -1060,15 +1070,15 @@ fn publish() {
         .with_stderr_data(str![[r#"
 [UPDATING] crates.io index
 [PACKAGING] foo v0.1.0 ([ROOT]/foo)
-[PACKAGED] 3 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
-[VERIFYING] foo v0.1.0 ([ROOT]/foo)
 [UPDATING] crates.io index
+[PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
+[VERIFYING] foo v0.1.0 ([ROOT]/foo)
 [COMPILING] foo v0.1.0 ([ROOT]/foo/target/package/foo-0.1.0)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [UPLOADING] foo v0.1.0 ([ROOT]/foo)
 [UPLOADED] foo v0.1.0 to registry `crates-io`
-[NOTE] waiting for `foo v0.1.0` to be available at registry `crates-io`.
-You may press ctrl-c to skip waiting; the crate should be available shortly.
+[NOTE] waiting for foo v0.1.0 to be available at registry `crates-io`
+[HELP] you may press ctrl-c to skip waiting; the crate should be available shortly
 [PUBLISHED] foo v0.1.0 at registry `crates-io`
 
 "#]])
@@ -1112,7 +1122,7 @@ You may press ctrl-c to skip waiting; the crate should be available shortly.
           }
         "#,
         "foo-0.1.0.crate",
-        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
+        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs", "Cargo.lock"],
         [(
             "Cargo.toml",
             str![[r##"
@@ -1142,6 +1152,11 @@ homepage = "https://example.com/"
 readme = false
 license = "MIT"
 
+[features]
+feat1 = []
+feat2 = ["dep:bar"]
+feat3 = ["feat2"]
+
 [lib]
 name = "foo"
 path = "src/lib.rs"
@@ -1149,11 +1164,6 @@ path = "src/lib.rs"
 [dependencies.bar]
 version = "1.0"
 optional = true
-
-[features]
-feat1 = []
-feat2 = ["dep:bar"]
-feat3 = ["feat2"]
 
 "##]],
         )],
@@ -1329,7 +1339,7 @@ foo v0.1.0 ([ROOT]/foo) features=
 
 "#]])
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();

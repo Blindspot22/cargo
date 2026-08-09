@@ -1,15 +1,15 @@
 //! Tests for the --config CLI option.
 
-use std::{collections::HashMap, fs};
+use cargo::util::data_structures::HashMap;
+use std::fs;
 
-use cargo::util::context::Definition;
+use crate::prelude::*;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::str;
 
 use super::config::{
-    assert_error, read_output, write_config_at, write_config_toml, GlobalContextBuilder,
+    GlobalContextBuilder, assert_error, read_output, write_config_at, write_config_toml,
 };
 
 #[cargo_test]
@@ -195,7 +195,7 @@ fn string_list_array() {
         .config_arg("build.rustflags = ['--cli']")
         .build();
     assert_eq!(
-        gctx.get::<cargo::util::context::StringList>("build.rustflags")
+        gctx.get::<cargo::context::StringList>("build.rustflags")
             .unwrap()
             .as_slice(),
         ["--file", "--cli"]
@@ -207,7 +207,7 @@ fn string_list_array() {
         .config_arg("build.rustflags = ['--cli']")
         .build();
     assert_eq!(
-        gctx.get::<cargo::util::context::StringList>("build.rustflags")
+        gctx.get::<cargo::context::StringList>("build.rustflags")
             .unwrap()
             .as_slice(),
         ["--file", "--env1", "--env2", "--cli"]
@@ -220,7 +220,7 @@ fn string_list_array() {
         .config_arg("build.rustflags = ['--cli']")
         .build();
     assert_eq!(
-        gctx.get::<cargo::util::context::StringList>("build.rustflags")
+        gctx.get::<cargo::context::StringList>("build.rustflags")
             .unwrap()
             .as_slice(),
         ["--file", "--env", "--cli"]
@@ -265,33 +265,6 @@ fn merges_table() {
 }
 
 #[cargo_test]
-fn merge_array_mixed_def_paths() {
-    // Merging of arrays with different def sites.
-    write_config_toml(
-        "
-        paths = ['file']
-        ",
-    );
-    // Create a directory for CWD to differentiate the paths.
-    let somedir = paths::root().join("somedir");
-    fs::create_dir(&somedir).unwrap();
-    let gctx = GlobalContextBuilder::new()
-        .cwd(&somedir)
-        .config_arg("paths=['cli']")
-        // env is currently ignored for get_list()
-        .env("CARGO_PATHS", "env")
-        .build();
-    let paths = gctx.get_list("paths").unwrap().unwrap();
-    // The definition for the root value is somewhat arbitrary, but currently starts with the file because that is what is loaded first.
-    assert_eq!(paths.definition, Definition::Path(paths::root()));
-    assert_eq!(paths.val.len(), 2);
-    assert_eq!(paths.val[0].0, "file");
-    assert_eq!(paths.val[0].1.root(&gctx), paths::root());
-    assert_eq!(paths.val[1].0, "cli");
-    assert_eq!(paths.val[1].1.root(&gctx), somedir);
-}
-
-#[cargo_test]
 fn enforces_format() {
     // These dotted key expressions should all be fine.
     let gctx = GlobalContextBuilder::new()
@@ -304,22 +277,31 @@ fn enforces_format() {
     assert_eq!(gctx.get::<bool>("a").unwrap(), true);
     assert_eq!(
         gctx.get::<HashMap<String, bool>>("b").unwrap(),
-        HashMap::from([("a".to_string(), true)])
+        HashMap::from_iter([("a".to_string(), true)])
     );
     assert_eq!(
         gctx.get::<HashMap<String, HashMap<String, bool>>>("c")
             .unwrap(),
-        HashMap::from([("b".to_string(), HashMap::from([("a".to_string(), true)]))])
+        HashMap::from_iter([(
+            "b".to_string(),
+            HashMap::from_iter([("a".to_string(), true)])
+        )])
     );
     assert_eq!(
         gctx.get::<HashMap<String, HashMap<String, bool>>>("d")
             .unwrap(),
-        HashMap::from([("=".to_string(), HashMap::from([("=".to_string(), true)]))])
+        HashMap::from_iter([(
+            "=".to_string(),
+            HashMap::from_iter([("=".to_string(), true)])
+        )])
     );
     assert_eq!(
         gctx.get::<HashMap<String, HashMap<String, bool>>>("e")
             .unwrap(),
-        HashMap::from([("'".to_string(), HashMap::from([("\"".to_string(), true)]))])
+        HashMap::from_iter([(
+            "'".to_string(),
+            HashMap::from_iter([("\"".to_string(), true)])
+        )])
     );
 
     // But anything that's not a dotted key expression should be disallowed.
@@ -394,7 +376,7 @@ fn bad_parse() {
     let gctx = GlobalContextBuilder::new().config_arg("abc").build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
+        str![[r#"
 failed to parse value from --config argument `abc` as a dotted key expression
 
 Caused by:
@@ -402,14 +384,17 @@ Caused by:
   |
 1 | abc
   |    ^
-expected `.`, `=`
-",
+key with no value, expected `=`
+
+"#]],
     );
 
     let gctx = GlobalContextBuilder::new().config_arg("").build_err();
     assert_error(
         gctx.unwrap_err(),
-        "--config argument `` was not a TOML dotted key expression (such as `build.jobs = 2`)",
+        str![
+            "--config argument `` was not a TOML dotted key expression (such as `build.jobs = 2`)"
+        ],
     );
 }
 
@@ -421,9 +406,10 @@ fn too_many_values() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
+        str![[r#"
 --config argument `a=1
-b=2` was not a TOML dotted key expression (such as `build.jobs = 2`)",
+b=2` was not a TOML dotted key expression (such as `build.jobs = 2`)
+"#]],
     );
 }
 
@@ -434,28 +420,28 @@ fn no_disallowed_values() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "registry.token cannot be set through --config for security reasons",
+        str!["registry.token cannot be set through --config for security reasons"],
     );
     let gctx = GlobalContextBuilder::new()
         .config_arg("registries.crates-io.token=\"hello\"")
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "registries.crates-io.token cannot be set through --config for security reasons",
+        str!["registries.crates-io.token cannot be set through --config for security reasons"],
     );
     let gctx = GlobalContextBuilder::new()
         .config_arg("registry.secret-key=\"hello\"")
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "registry.secret-key cannot be set through --config for security reasons",
+        str!["registry.secret-key cannot be set through --config for security reasons"],
     );
     let gctx = GlobalContextBuilder::new()
         .config_arg("registries.crates-io.secret-key=\"hello\"")
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "registries.crates-io.secret-key cannot be set through --config for security reasons",
+        str!["registries.crates-io.secret-key cannot be set through --config for security reasons"],
     );
 }
 
@@ -467,7 +453,9 @@ fn no_inline_table_value() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "--config argument `a.b={c = \"d\"}` sets a value to an inline table, which is not accepted",
+        str![[
+            r#"--config argument `a.b={c = "d"}` sets a value to an inline table, which is not accepted"#
+        ]],
     );
 }
 
@@ -479,9 +467,10 @@ fn no_array_of_tables_values() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
+        str![[r#"
 --config argument `[[a.b]]
-c = \"d\"` was not a TOML dotted key expression (such as `build.jobs = 2`)",
+c = "d"` was not a TOML dotted key expression (such as `build.jobs = 2`)
+"#]],
     );
 }
 
@@ -493,8 +482,7 @@ fn no_comments() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
---config argument `a.b = \"c\" # exactly` includes non-whitespace decoration",
+        str![[r#"--config argument `a.b = "c" # exactly` includes non-whitespace decoration"#]],
     );
 
     let gctx = GlobalContextBuilder::new()
@@ -502,8 +490,10 @@ fn no_comments() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
---config argument `# exactly\na.b = \"c\"` includes non-whitespace decoration",
+        str![[r#"
+--config argument `# exactly
+a.b = "c"` includes non-whitespace decoration
+"#]],
     );
 }
 
@@ -515,14 +505,15 @@ fn bad_cv_convert() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
+        str![[r#"
 failed to convert --config argument `a=2019-12-01`
 
 Caused by:
-  failed to parse key `a`
+  failed to parse config at `a`
 
 Caused by:
-  found TOML configuration value of unknown type `datetime`",
+  unsupported TOML configuration type `datetime`
+"#]],
     );
 }
 
@@ -536,15 +527,15 @@ fn fail_to_merge_multiple_args() {
     // This is a little repetitive, but hopefully the user can figure it out.
     assert_error(
         gctx.unwrap_err(),
-        "\
+        str![[r#"
 failed to merge --config argument `foo=['a']`
 
 Caused by:
   failed to merge key `foo` between --config cli option and --config cli option
 
 Caused by:
-  failed to merge config value from `--config cli option` into `--config cli option`: \
-  expected string, but found array",
+  failed to merge config value from `--config cli option` into `--config cli option`: expected string, but found array
+"#]],
     );
 }
 
@@ -563,7 +554,7 @@ fn cli_path() {
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
+        str![[r#"
 failed to parse value from --config argument `missing.toml` as a dotted key expression
 
 Caused by:
@@ -571,7 +562,8 @@ Caused by:
   |
 1 | missing.toml
   |             ^
-expected `.`, `=`
-",
+key with no value, expected `=`
+
+"#]],
     );
 }

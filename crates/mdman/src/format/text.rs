@@ -1,8 +1,8 @@
 //! Text formatter.
 
-use crate::util::{header_text, unwrap};
 use crate::EventIter;
-use anyhow::{bail, Error};
+use crate::util::{header_text, unwrap};
+use anyhow::{Error, bail};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Tag, TagEnd};
 use std::fmt::Write;
 use std::mem;
@@ -217,6 +217,9 @@ impl<'e> TextRenderer<'e> {
                                         range.start
                                     );
                                 }
+                                LinkType::WikiLink { .. } => {
+                                    panic!("wikilink unsupported");
+                                }
                             }
                         }
                         Tag::Image { .. } => {
@@ -226,7 +229,9 @@ impl<'e> TextRenderer<'e> {
                         | Tag::MetadataBlock { .. }
                         | Tag::DefinitionList
                         | Tag::DefinitionListTitle
-                        | Tag::DefinitionListDefinition => {}
+                        | Tag::DefinitionListDefinition
+                        | Tag::Superscript
+                        | Tag::Subscript => {}
                     }
                 }
                 Event::End(tag_end) => match &tag_end {
@@ -283,7 +288,9 @@ impl<'e> TextRenderer<'e> {
                     | TagEnd::DefinitionList
                     | TagEnd::DefinitionListTitle
                     | TagEnd::Image
-                    | TagEnd::DefinitionListDefinition => {}
+                    | TagEnd::DefinitionListDefinition
+                    | TagEnd::Superscript
+                    | TagEnd::Subscript => {}
                 },
                 Event::Text(t) | Event::Code(t) => {
                     if wrap_text {

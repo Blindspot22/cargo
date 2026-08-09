@@ -1,6 +1,6 @@
 use crate::command_prelude::*;
 use anyhow::bail;
-use cargo::{drop_println, CargoResult};
+use cargo::{CargoResult, drop_println};
 use serde::Serialize;
 
 pub fn cli() -> Command {
@@ -8,16 +8,15 @@ pub fn cli() -> Command {
         .about("Print a JSON representation of a Cargo.toml file's location")
         .arg(flag("workspace", "Locate Cargo.toml of the workspace root"))
         .arg(
-            opt(
-                "message-format",
-                "Output representation [possible values: json, plain]",
-            )
-            .value_name("FMT"),
+            opt("message-format", "Output representation")
+                .value_name("FMT")
+                .value_parser(["json", "plain"])
+                .ignore_case(true),
         )
         .arg_silent_suggestion()
         .arg_manifest_path()
         .after_help(color_print::cstr!(
-            "Run `<cyan,bold>cargo help locate-project</>` for more detailed information.\n"
+            "Run `<bright-cyan,bold>cargo help locate-project</>` for more detailed information.\n"
         ))
 }
 
@@ -28,6 +27,7 @@ pub struct ProjectLocation<'a> {
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let root_manifest;
+    let workspace_root;
     let workspace;
     let root = match WhatToFind::parse(args) {
         WhatToFind::CurrentManifest => {
@@ -35,8 +35,19 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             &root_manifest
         }
         WhatToFind::Workspace => {
-            workspace = args.workspace(gctx)?;
-            workspace.root_manifest()
+            root_manifest = args.root_manifest(gctx)?;
+            // Try fast path first - only works when package is explicitly listed in members
+            if let Some(ws_root) =
+                cargo::workspace::find_workspace_root_with_membership_check(&root_manifest, gctx)?
+            {
+                workspace_root = ws_root;
+                &workspace_root
+            } else {
+                // Fallback to full workspace loading for path dependency membership.
+                // If loading fails, we must propagate the error to avoid false results.
+                workspace = args.workspace(gctx)?;
+                workspace.root_manifest()
+            }
         }
     };
 

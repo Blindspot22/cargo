@@ -3,8 +3,9 @@
 //! > This crate is maintained by the Cargo team, primarily for use by Cargo
 //! > and not intended for external use (except as a transitive dependency). This
 //! > crate may make major changes to its APIs or be deprecated without warning.
+#![allow(clippy::disallowed_types)]
 
-use anyhow::{bail, Context, Error};
+use anyhow::{Context, Error, bail};
 use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::fs;

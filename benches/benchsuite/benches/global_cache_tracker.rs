@@ -1,10 +1,10 @@
 //! Benchmarks for the global cache tracker.
 
-use cargo::core::global_cache_tracker::{self, DeferredGlobalLastUse, GlobalCacheTracker};
+use cargo::util::GlobalContext;
 use cargo::util::cache_lock::CacheLockMode;
 use cargo::util::interning::InternedString;
-use cargo::util::GlobalContext;
-use criterion::{criterion_group, criterion_main, Criterion};
+use cargo::workspace::global_cache_tracker::{self, DeferredGlobalLastUse, GlobalCacheTracker};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +27,7 @@ fn cargo_home() -> PathBuf {
 
 fn initialize_context() -> GlobalContext {
     // Set up config.
-    let shell = cargo::core::Shell::new();
+    let shell = cargo_util_terminal::Shell::new();
     let homedir = cargo_home();
     if !homedir.exists() {
         fs::create_dir_all(&homedir).unwrap();

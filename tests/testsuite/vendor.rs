@@ -6,12 +6,13 @@
 
 use std::fs;
 
+use crate::prelude::*;
+use cargo_test_support::assert_deterministic_mtime;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::git;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, Package, RegistryBuilder};
 use cargo_test_support::str;
-use cargo_test_support::{basic_lib_manifest, basic_manifest, paths, project, Project};
+use cargo_test_support::{Project, basic_lib_manifest, basic_manifest, paths, project};
 
 #[cargo_test]
 fn vendor_simple() {
@@ -130,11 +131,7 @@ fn vendor_path_specified() {
         "deps/.vendor"
     };
 
-    let output = p
-        .cargo("vendor --respect-source-config")
-        .arg(path)
-        .exec_with_output()
-        .unwrap();
+    let output = p.cargo("vendor --respect-source-config").arg(path).run();
     // Assert against original output to ensure that
     // path is normalized by `ops::vendor` on Windows.
     assert_eq!(
@@ -217,12 +214,13 @@ fn package_exclude() {
 
     p.cargo("vendor --respect-source-config").run();
     let csum = p.read_file("vendor/bar/.cargo-checksum.json");
+    // Everything is included because `cargo-vendor`
+    // do direct extractions from tarballs
+    // (Some are excluded like `.git` or `.cargo-ok` though.)
     assert!(csum.contains(".include"));
-    assert!(!csum.contains(".exclude"));
-    assert!(!csum.contains(".dotdir/exclude"));
-    // Gitignore doesn't re-include a file in an excluded parent directory,
-    // even if negating it explicitly.
-    assert!(!csum.contains(".dotdir/include"));
+    assert!(csum.contains(".exclude"));
+    assert!(csum.contains(".dotdir/exclude"));
+    assert!(csum.contains(".dotdir/include"));
 }
 
 #[cargo_test]
@@ -1088,20 +1086,38 @@ fn ignore_files() {
         .build();
 
     Package::new("url", "1.4.1")
-        .file("src/lib.rs", "")
+        // These will be vendored
+        .file(".cargo_vcs_info.json", "")
+        .file("Cargo.toml.orig", "")
         .file("foo.orig", "")
-        .file(".gitignore", "")
-        .file(".gitattributes", "")
         .file("foo.rej", "")
+        .file("src/lib.rs", "")
+        // These will not be vendored
+        .file(".cargo-ok", "")
+        .file(".gitattributes", "")
+        .file(".gitignore", "")
         .publish();
 
     p.cargo("vendor --respect-source-config").run();
     let csum = p.read_file("vendor/url/.cargo-checksum.json");
-    assert!(!csum.contains("foo.orig"));
-    assert!(!csum.contains(".gitignore"));
-    assert!(!csum.contains(".gitattributes"));
-    assert!(!csum.contains(".cargo-ok"));
-    assert!(!csum.contains("foo.rej"));
+    assert_e2e().eq(
+        csum,
+        str![[r#"
+{
+  "$comment": "This file only protects against accidental modifications. It is not a security mechanism and does not protect against malicious changes.",
+  "files": {
+    ".cargo_vcs_info.json": "[..]",
+    "Cargo.toml": "[..]",
+    "Cargo.toml.orig": "[..]",
+    "foo.orig": "[..]",
+    "foo.rej": "[..]",
+    "src/lib.rs": "[..]"
+  },
+  "package": "[..]"
+}
+"#]]
+        .is_json(),
+    );
 }
 
 #[cargo_test]
@@ -1348,7 +1364,7 @@ fn git_duplicate() {
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `[ROOTURL]/a`
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] b v0.5.0 (registry `dummy-registry`)
 [ERROR] failed to sync
@@ -1425,10 +1441,7 @@ fn git_complex() {
         .file("src/lib.rs", "")
         .build();
 
-    let output = p
-        .cargo("vendor --respect-source-config")
-        .exec_with_output()
-        .unwrap();
+    let output = p.cargo("vendor --respect-source-config").run();
     let output = String::from_utf8(output.stdout).unwrap();
     p.change_file(".cargo/config.toml", &output);
 
@@ -1505,10 +1518,7 @@ fn git_deterministic() {
         .file("src/lib.rs", "")
         .build();
 
-    let output = p
-        .cargo("vendor --respect-source-config")
-        .exec_with_output()
-        .unwrap();
+    let output = p.cargo("vendor --respect-source-config").run();
     let output = String::from_utf8(output.stdout).unwrap();
     p.change_file(".cargo/config.toml", &output);
 
@@ -1706,11 +1716,12 @@ fn ignore_hidden() {
     assert!(p.root().join("vendor/.git").exists());
     // And just for good measure, make sure no files changed.
     let mut opts = git2::StatusOptions::new();
-    assert!(repo
-        .statuses(Some(&mut opts))
-        .unwrap()
-        .iter()
-        .all(|status| status.status() == git2::Status::CURRENT));
+    assert!(
+        repo.statuses(Some(&mut opts))
+            .unwrap()
+            .iter()
+            .all(|status| status.status() == git2::Status::CURRENT)
+    );
 }
 
 #[cargo_test]
@@ -1744,10 +1755,7 @@ fn config_instructions_works() {
         )
         .file("src/lib.rs", "")
         .build();
-    let output = p
-        .cargo("vendor --respect-source-config")
-        .exec_with_output()
-        .unwrap();
+    let output = p.cargo("vendor --respect-source-config").run();
     let output = String::from_utf8(output.stdout).unwrap();
     p.change_file(".cargo/config.toml", &output);
 
@@ -1873,7 +1881,7 @@ fn no_remote_dependency_no_vendor() {
 
     p.cargo("vendor")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 There is no dependency to vendor in this project.
 
 "#]])
@@ -1951,4 +1959,301 @@ fn vendor_crate_with_ws_inherit() {
 
 "#]])
         .run();
+}
+
+#[cargo_test]
+fn dont_delete_non_registry_sources_with_respect_source_config() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                log = "0.3.5"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    Package::new("log", "0.3.5").publish();
+
+    p.cargo("vendor --respect-source-config").run();
+    let lock = p.read_file("vendor/log/Cargo.toml");
+    assert!(lock.contains("version = \"0.3.5\""));
+
+    add_crates_io_vendor_config(&p);
+    p.cargo("vendor --respect-source-config new-vendor-dir")
+        .with_stderr_data(str![[r#"
+   Vendoring log v0.3.5 ([ROOT]/foo/vendor/log) to new-vendor-dir/log
+To use vendored sources, add this to your .cargo/config.toml for this project:
+
+
+"#]])
+        .with_stdout_data(str![[r#"
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "new-vendor-dir"
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn error_loading_which_lock() {
+    // Tests an error message to make sure it is clear which
+    // manifest/workspace caused the problem. In this particular case, it was
+    // because the 2024 edition wants to know which rust version is in use.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "b/Cargo.toml",
+            r#"
+                [package]
+                name = "b"
+                version = "0.1.0"
+                edition = "2024"
+            "#,
+        )
+        .file("b/src/lib.rs", "")
+        .build();
+
+    p.cargo("vendor --respect-source-config -s b/Cargo.toml")
+        .env("RUSTC", "does-not-exist")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to sync
+
+Caused by:
+  failed to load lockfile for [ROOT]/foo/b
+
+Caused by:
+  could not execute process `does-not-exist -vV` (never executed)
+
+Caused by:
+  [NOT_FOUND]
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn error_downloading() {
+    // Tests the error message when downloading packages.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    Package::new("bar", "1.0.0").publish();
+    p.cargo("generate-lockfile").run();
+    std::fs::remove_file(cargo_test_support::paths::root().join("dl/bar/1.0.0/download")).unwrap();
+    p.cargo("vendor --respect-source-config")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[DOWNLOADING] crates ...
+[ERROR] failed to sync
+
+Caused by:
+  failed to download packages for [ROOT]/foo
+
+Caused by:
+  failed to download from `[ROOTURL]/dl/bar/1.0.0/download`
+
+Caused by:
+  [37] Could[..]t read a file:// file (Could[..]t open file [ROOT]/dl/bar/1.0.0/download)
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn vendor_rename_fallback() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                log = "0.3.5"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    Package::new("log", "0.3.5").publish();
+
+    p.cargo("vendor --respect-source-config --no-delete")
+        .env("CARGO_LOG", "cargo::ops::cargo_vendor=warn")
+        .env("__CARGO_TEST_VENDOR_FALLBACK_CP_SOURCES", "true")
+        .with_status(0)
+        .with_stderr_data(str![[r#"
+...
+[..]failed to `mv "[..]vendor[..].vendor-staging[..]log-0.3.5" "[..]vendor[..]log"`: simulated rename error for testing
+...
+"#]])
+        .run();
+
+    assert!(p.root().join("vendor/log/Cargo.toml").exists());
+}
+
+#[cargo_test]
+fn vendor_local_registry() {
+    // A regression test for rust-lang/cargo#16412
+    let root = paths::root();
+    fs::create_dir(root.join(".cargo")).unwrap();
+    fs::write(
+        root.join(".cargo/config.toml"),
+        r#"
+            [source.crates-io]
+            registry = 'https://wut'
+            replace-with = 'my-awesome-local-registry'
+
+            [source.my-awesome-local-registry]
+            local-registry = 'registry'
+        "#,
+    )
+    .unwrap();
+
+    Package::new("bar", "0.0.0")
+        .local(true)
+        .file("src/lib.rs", "pub fn bar() {}")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                edition = "2021"
+
+                [dependencies]
+                bar = "0.0.0"
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() { bar::bar(); }")
+        .build();
+
+    p.cargo("vendor --respect-source-config")
+        .with_stderr_data(str![[r#"
+[LOCKING] 1 package to highest compatible version
+[UNPACKING] bar v0.0.0 (registry `[ROOT]/registry`)
+   Vendoring bar v0.0.0 ([ROOT]/home/.cargo/registry/src/-[HASH]/bar-0.0.0) to vendor/bar
+To use vendored sources, add this to your .cargo/config.toml for this project:
+
+
+"#]])
+        .run();
+
+    assert_e2e().eq(
+        p.read_file("vendor/bar/Cargo.toml"),
+        str![[r#"
+
+            [package]
+            name = "bar"
+            version = "0.0.0"
+            authors = []
+        
+"#]],
+    );
+
+    assert_e2e().eq(
+        p.read_file("vendor/bar/src/lib.rs"),
+        str!["pub fn bar() {}"],
+    );
+}
+
+#[cargo_test]
+fn deterministic_mtime() {
+    Package::new("foo", "0.1.0")
+        // content doesn't matter, we just want to check mtime
+        .file("Cargo.lock", "")
+        .file(".cargo_vcs_info.json", "")
+        .file("src/lib.rs", "")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                edition = "2015"
+
+                [dependencies]
+                foo = '0.1.0'
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("vendor --respect-source-config").run();
+
+    // Generated files should have deterministic mtime after unpacking.
+    assert_deterministic_mtime(p.root().join("vendor/foo/Cargo.lock"));
+    assert_deterministic_mtime(p.root().join("vendor/foo/Cargo.toml"));
+    assert_deterministic_mtime(p.root().join("vendor/foo/.cargo_vcs_info.json"));
+}
+
+#[cargo_test]
+fn vendor_filters_git_files_recursively() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "0.1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    Package::new("bar", "0.1.0")
+        .file("src/lib.rs", "")
+        .file(".gitattributes", "*.rs text")
+        .file("subdir/.gitattributes", "*.c text")
+        .file("subdir/.gitignore", "target/")
+        .file("deep/nested/.git/config", "")
+        .file("tests/.gitattributes", "*.txt text")
+        .publish();
+
+    p.cargo("vendor --respect-source-config").run();
+
+    // After fix, these should be filtered
+    assert!(!p.root().join("vendor/bar/subdir/.gitattributes").exists());
+    assert!(!p.root().join("vendor/bar/subdir/.gitignore").exists());
+    assert!(!p.root().join("vendor/bar/deep/nested/.git").exists());
+    assert!(!p.root().join("vendor/bar/tests/.gitattributes").exists());
+    assert!(!p.root().join("vendor/bar/.gitattributes").exists());
+    assert!(p.root().join("vendor/bar/src/lib.rs").exists());
 }

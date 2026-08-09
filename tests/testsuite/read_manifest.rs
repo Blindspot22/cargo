@@ -1,6 +1,6 @@
 //! Tests for the `cargo read-manifest` command.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::{basic_bin_manifest, main_file, project, str};
 
 pub fn basic_bin_manifest_with_readme(name: &str, readme_filename: &str) -> String {
@@ -75,7 +75,8 @@ fn cargo_read_manifest_path_to_cargo_toml_parent_relative() {
         .cwd(p.root().parent().unwrap())
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] the manifest-path must be a path to a Cargo.toml file
+[ERROR] manifest path `foo` is a directory but expected a file
+[HELP] [ROOT]/foo/Cargo.toml exists
 
 "#]])
         .run();
@@ -93,7 +94,8 @@ fn cargo_read_manifest_path_to_cargo_toml_parent_absolute() {
         .cwd(p.root().parent().unwrap())
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] the manifest-path must be a path to a Cargo.toml file
+[ERROR] manifest path `[ROOT]/foo` is a directory but expected a file
+[HELP] [ROOT]/foo/Cargo.toml exists
 
 "#]])
         .run();

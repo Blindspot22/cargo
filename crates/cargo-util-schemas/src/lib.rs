@@ -9,7 +9,10 @@
 //! > ecosystem. This crate follows semver compatibility for its APIs.
 
 pub mod core;
+pub mod index;
+pub mod lockfile;
 pub mod manifest;
+pub mod messages;
 #[cfg(feature = "unstable-schema")]
 pub mod schema;
 

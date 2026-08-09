@@ -1,7 +1,7 @@
 //! Network tests for SSH connections.
 //!
-//! Note that these tests will generally require setting CARGO_CONTAINER_TESTS
-//! or CARGO_PUBLIC_NETWORK_TESTS.
+//! Note that these tests will generally require setting `CARGO_CONTAINER_TESTS`
+//! or `CARGO_PUBLIC_NETWORK_TESTS`.
 //!
 //! NOTE: The container tests almost certainly won't work on Windows.
 
@@ -9,10 +9,10 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+use crate::prelude::*;
 use cargo_test_support::containers::{Container, ContainerHandle, MkFile};
 use cargo_test_support::git::cargo_uses_gitoxide;
-use cargo_test_support::prelude::*;
-use cargo_test_support::{paths, process, project, str, Project};
+use cargo_test_support::{Project, paths, process, project, str};
 
 fn ssh_repo_url(container: &ContainerHandle, name: &str) -> String {
     let port = container.port_mappings[&22];
@@ -139,7 +139,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update ssh://testuser@127.0.0.1:[..]/repos/bar.git
+  unable to update ssh://testuser@127.0.0.1:[..]/repos/bar.git
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -203,7 +203,7 @@ fn known_host_works() {
         .env("SSH_AUTH_SOCK", &agent.sock)
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `ssh://testuser@127.0.0.1:[..]/repos/bar.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();
@@ -231,7 +231,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update ssh://testuser@127.0.0.1:[..]/repos/bar.git
+  unable to update ssh://testuser@127.0.0.1:[..]/repos/bar.git
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -275,7 +275,7 @@ fn known_host_without_port() {
         .env("SSH_AUTH_SOCK", &agent.sock)
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `ssh://testuser@127.0.0.1:[..]/repos/bar.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();
@@ -312,7 +312,7 @@ fn hostname_case_insensitive() {
         .with_stderr_data(&format!(
             "\
 [UPDATING] git repository `ssh://testuser@{hostname}:{port}/repos/bar.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 "
         ))
         .run();
@@ -344,7 +344,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update ssh://testuser@127.0.0.1:{port}/repos/bar.git
+  unable to update ssh://testuser@127.0.0.1:{port}/repos/bar.git
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -383,7 +383,7 @@ Caused by:
         .env("SSH_AUTH_SOCK", &agent.sock)
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `ssh://testuser@127.0.0.1:[..]/repos/bar.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();
@@ -474,7 +474,7 @@ Caused by:
   failed to load source for dependency `bitflags`
 
 Caused by:
-  Unable to update ssh://git@github.com/rust-lang/bitflags.git?tag=1.3.2
+  unable to update ssh://git@github.com/rust-lang/bitflags.git?tag=1.3.2
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bitflags-[HASH]
@@ -503,7 +503,7 @@ Caused by:
   failed to load source for dependency `bitflags`
 
 Caused by:
-  Unable to update ssh://git@github.com/rust-lang/bitflags.git?tag=1.3.2
+  unable to update ssh://git@github.com/rust-lang/bitflags.git?tag=1.3.2
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bitflags-[HASH]
@@ -536,7 +536,7 @@ Caused by:
   failed to load source for dependency `bitflags`
 
 Caused by:
-  Unable to update ssh://git@github.com:22/rust-lang/bitflags.git?tag=1.3.2
+  unable to update ssh://git@github.com:22/rust-lang/bitflags.git?tag=1.3.2
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bitflags-[HASH]
@@ -565,7 +565,7 @@ Caused by:
   failed to load source for dependency `bitflags`
 
 Caused by:
-  Unable to update ssh://git@github.com:22/rust-lang/bitflags.git?tag=1.3.2
+  unable to update ssh://git@github.com:22/rust-lang/bitflags.git?tag=1.3.2
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bitflags-[HASH]
@@ -628,7 +628,7 @@ fn ssh_key_in_config() {
         .env("SSH_AUTH_SOCK", &agent.sock)
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `ssh://testuser@127.0.0.1:[..]/repos/bar.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();

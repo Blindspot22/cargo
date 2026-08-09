@@ -1,8 +1,8 @@
 //! Tests for supporting older versions of the Cargo.lock file format.
 
+use crate::prelude::*;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::git;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
 use cargo_test_support::{basic_lib_manifest, basic_manifest, project};
@@ -517,8 +517,8 @@ fn locked_correct_error() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[ERROR] the lock file [ROOT]/foo/Cargo.lock needs to be updated but --locked was passed to prevent this
-If you want to try to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+[ERROR] cannot create the lock file [ROOT]/foo/Cargo.lock because --locked was passed to prevent this
+[HELP] to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
 
 "#]])
         .run();
@@ -891,7 +891,7 @@ dependencies = [
 candidate versions found which didn't match: 0.0.1
 location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `test v0.0.0 ([ROOT]/foo)`
-perhaps a crate was updated and forgotten to be re-vendored?
+[NOTE] perhaps a crate was updated and forgotten to be re-vendored?
 
 "#]])
         .run();
@@ -1009,7 +1009,7 @@ dependencies = [
         .with_stderr_data(format!(
             "\
 [UPDATING] git repository `[ROOTURL]/dep1`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ADDING] dep1 v0.5.0 ([ROOTURL]/dep1?{ref_kind}={encoded_ref}#[..])
 [CHECKING] dep1 v0.5.0 ([ROOTURL]/dep1?{ref_kind}={encoded_ref}#[..])
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -1104,7 +1104,7 @@ dependencies = [
         .with_stderr_data(format!(
             "\
 [UPDATING] git repository `[ROOTURL]/dep1`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ADDING] dep1 v0.5.0 ([ROOTURL]/dep1?{ref_kind}={encoded_ref}#[..])
 [CHECKING] dep1 v0.5.0 ([ROOTURL]/dep1?{ref_kind}={encoded_ref}#[..])
 [CHECKING] foo v0.0.1 ([ROOT]/foo)

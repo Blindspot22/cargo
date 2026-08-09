@@ -7,21 +7,30 @@ use std::io::prelude::*;
 use std::io::{Cursor, SeekFrom};
 use std::time::Instant;
 
-use curl::easy::{Easy, List};
-use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
+use http::{Method, Request, Response, StatusCode};
+use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub type Result<T> = std::result::Result<T, Error>;
+type RegistryResult<T, E> = Result<T, Error<E>>;
 
-pub struct Registry {
+/// Perform an HTTP request and return the response.
+///
+/// Users of this crate must provide an implementation of this
+/// trait using an HTTP crate such as `curl`, `reqwest`, etc.
+pub trait HttpClient {
+    type Error: std::error::Error + Send + Sync;
+    fn request(&self, req: Request<Vec<u8>>) -> Result<Response<Vec<u8>>, Self::Error>;
+}
+
+pub struct Registry<T: HttpClient> {
     /// The base URL for issuing API requests.
     host: String,
     /// Optional authorization token.
     /// If None, commands requiring authorization will fail.
     token: Option<String>,
-    /// Curl handle for issuing requests.
-    handle: Easy,
+    /// HTTP handle for issuing requests.
+    handle: T,
     /// Whether to include the authorization token with all requests.
     auth_required: bool,
 }
@@ -82,12 +91,8 @@ pub struct NewCrateDependency {
     pub artifact: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bindep_target: Option<String>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lib: bool,
-}
-
-fn is_false(x: &bool) -> bool {
-    *x == false
 }
 
 #[derive(Deserialize)]
@@ -142,12 +147,17 @@ struct Crates {
 
 /// Error returned when interacting with a registry.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Error from libcurl.
+#[non_exhaustive]
+pub enum Error<T> {
+    /// Error from underlying transport.
     #[error(transparent)]
-    Curl(#[from] curl::Error),
+    Transport(T),
 
-    /// Error from seriailzing the request payload and deserializing the
+    /// Error from http.
+    #[error(transparent)]
+    Http(#[from] http::Error),
+
+    /// Error from serializing the request payload and deserializing the
     /// response body (like response body didn't match expected structure).
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -167,27 +177,27 @@ pub enum Error {
         errors.join(", "),
     )]
     Api {
-        code: u32,
+        code: StatusCode,
         headers: Vec<String>,
         errors: Vec<String>,
     },
 
     /// Error from API response which didn't have pre-programmed `errors.details`.
     #[error(
-        "failed to get a 200 OK response, got {code}\nheaders:\n\t{}\nbody:\n{body}",
+        "failed to get a 200 OK response, got {}\nheaders:\n\t{}\nbody:\n{body}",
+        code.as_u16(),
         headers.join("\n\t"),
     )]
     Code {
-        code: u32,
+        code: StatusCode,
         headers: Vec<String>,
         body: String,
     },
 
-    /// Reason why the token was invalid.
-    #[error("{0}")]
-    InvalidToken(&'static str),
+    #[error(transparent)]
+    InvalidToken(#[from] TokenError),
 
-    /// Server was unavailable and timeouted. Happened when uploading a way
+    /// Server was unavailable and timed out. Happened when uploading a way
     /// too large tarball to crates.io.
     #[error(
         "Request timed out after 30 seconds. If you're trying to \
@@ -198,27 +208,28 @@ pub enum Error {
     Timeout(u64),
 }
 
-impl Registry {
+impl<T: HttpClient> Registry<T> {
     /// Creates a new `Registry`.
     ///
     /// ## Example
     ///
     /// ```rust
-    /// use curl::easy::Easy;
-    /// use crates_io::Registry;
+    /// use crates_io::{Registry, HttpClient};
+    /// use http::{Request, Response};
     ///
-    /// let mut handle = Easy::new();
-    /// // If connecting to crates.io, a user-agent is required.
-    /// handle.useragent("my_crawler (example.com/info)");
-    /// let mut reg = Registry::new_handle(String::from("https://crates.io"), None, handle, true);
+    /// struct Client {}
+    /// impl HttpClient for Client {
+    ///     type Error = std::io::Error;
+    ///     fn request(&self, req: Request<Vec<u8>>) -> Result<Response<Vec<u8>>, Self::Error> {
+    ///         todo!()
+    ///     }
+    /// }
+    /// let client = Client {};
+    ///
+    /// let mut reg = Registry::new_handle(String::from("https://crates.io"), None, client, false);
     /// ```
-    pub fn new_handle(
-        host: String,
-        token: Option<String>,
-        handle: Easy,
-        auth_required: bool,
-    ) -> Registry {
-        Registry {
+    pub fn new_handle(host: String, token: Option<String>, handle: T, auth_required: bool) -> Self {
+        Self {
             host,
             token,
             handle,
@@ -230,10 +241,8 @@ impl Registry {
         self.token = token;
     }
 
-    fn token(&self) -> Result<&str> {
-        let token = self.token.as_ref().ok_or_else(|| {
-            Error::InvalidToken("no upload token found, please run `cargo login`")
-        })?;
+    fn token(&self) -> RegistryResult<&str, T::Error> {
+        let token = self.token.as_ref().ok_or_else(|| TokenError::Missing)?;
         check_token(token)?;
         Ok(token)
     }
@@ -246,26 +255,30 @@ impl Registry {
         is_url_crates_io(&self.host)
     }
 
-    pub fn add_owners(&mut self, krate: &str, owners: &[&str]) -> Result<String> {
+    pub fn add_owners(&mut self, krate: &str, owners: &[&str]) -> RegistryResult<String, T::Error> {
         let body = serde_json::to_string(&OwnersReq { users: owners })?;
-        let body = self.put(&format!("/crates/{}/owners", krate), body.as_bytes())?;
+        let body = self.put(&format!("/crates/{}/owners", krate), Some(body.as_bytes()))?;
         assert!(serde_json::from_str::<OwnerResponse>(&body)?.ok);
         Ok(serde_json::from_str::<OwnerResponse>(&body)?.msg)
     }
 
-    pub fn remove_owners(&mut self, krate: &str, owners: &[&str]) -> Result<()> {
+    pub fn remove_owners(&mut self, krate: &str, owners: &[&str]) -> RegistryResult<(), T::Error> {
         let body = serde_json::to_string(&OwnersReq { users: owners })?;
         let body = self.delete(&format!("/crates/{}/owners", krate), Some(body.as_bytes()))?;
         assert!(serde_json::from_str::<OwnerResponse>(&body)?.ok);
         Ok(())
     }
 
-    pub fn list_owners(&mut self, krate: &str) -> Result<Vec<User>> {
+    pub fn list_owners(&mut self, krate: &str) -> RegistryResult<Vec<User>, T::Error> {
         let body = self.get(&format!("/crates/{}/owners", krate))?;
         Ok(serde_json::from_str::<Users>(&body)?.users)
     }
 
-    pub fn publish(&mut self, krate: &NewCrate, mut tarball: &File) -> Result<Warnings> {
+    pub fn publish(
+        &mut self,
+        krate: &NewCrate,
+        mut tarball: &File,
+    ) -> RegistryResult<Warnings, T::Error> {
         let json = serde_json::to_string(krate)?;
         // Prepare the body. The format of the upload request is:
         //
@@ -288,32 +301,27 @@ impl Registry {
             w.extend(&(tarball_len as u32).to_le_bytes());
             w
         };
-        let size = tarball_len as usize + header.len();
-        let mut body = Cursor::new(header).chain(tarball);
+        let mut body = Vec::new();
+        Cursor::new(header).chain(tarball).read_to_end(&mut body)?;
+        let url = self.api_url("/crates/new");
 
-        let url = format!("{}/api/v1/crates/new", self.host);
-
-        self.handle.put(true)?;
-        self.handle.url(&url)?;
-        self.handle.in_filesize(size as u64)?;
-        let mut headers = List::new();
-        headers.append("Accept: application/json")?;
-        headers.append(&format!("Authorization: {}", self.token()?))?;
-        self.handle.http_headers(headers)?;
-
+        let request = http::Request::put(url)
+            .header(http::header::CONTENT_TYPE, "application/octet-stream")
+            .header(http::header::ACCEPT, "application/json")
+            .header(http::header::AUTHORIZATION, self.token()?)
+            .body(body)?;
         let started = Instant::now();
-        let body = self
-            .handle(&mut |buf| body.read(buf).unwrap_or(0))
-            .map_err(|e| match e {
-                Error::Code { code, .. }
-                    if code == 503
-                        && started.elapsed().as_secs() >= 29
-                        && self.host_is_crates_io() =>
-                {
-                    Error::Timeout(tarball_len)
-                }
-                _ => e.into(),
-            })?;
+        let response = self.handle.request(request).map_err(Error::Transport)?;
+        let body = self.handle(response).map_err(|e| match e {
+            Error::Code { code, .. }
+                if code == StatusCode::SERVICE_UNAVAILABLE
+                    && started.elapsed().as_secs() >= 29
+                    && self.host_is_crates_io() =>
+            {
+                Error::Timeout(tarball_len)
+            }
+            _ => e.into(),
+        })?;
 
         let response = if body.is_empty() {
             "{}".parse()?
@@ -349,9 +357,14 @@ impl Registry {
         })
     }
 
-    pub fn search(&mut self, query: &str, limit: u32) -> Result<(Vec<Crate>, u32)> {
+    pub fn search(
+        &mut self,
+        query: &str,
+        limit: u32,
+    ) -> RegistryResult<(Vec<Crate>, u32), T::Error> {
         let formatted_query = percent_encode(query.as_bytes(), NON_ALPHANUMERIC);
         let body = self.req(
+            Method::GET,
             &format!("/crates?q={}&per_page={}", formatted_query, limit),
             None,
             Auth::Unauthorized,
@@ -361,88 +374,81 @@ impl Registry {
         Ok((crates.crates, crates.meta.total))
     }
 
-    pub fn yank(&mut self, krate: &str, version: &str) -> Result<()> {
+    pub fn yank(&mut self, krate: &str, version: &str) -> RegistryResult<(), T::Error> {
         let body = self.delete(&format!("/crates/{}/{}/yank", krate, version), None)?;
         assert!(serde_json::from_str::<R>(&body)?.ok);
         Ok(())
     }
 
-    pub fn unyank(&mut self, krate: &str, version: &str) -> Result<()> {
-        let body = self.put(&format!("/crates/{}/{}/unyank", krate, version), &[])?;
+    pub fn unyank(&mut self, krate: &str, version: &str) -> RegistryResult<(), T::Error> {
+        let body = self.put(&format!("/crates/{}/{}/unyank", krate, version), None)?;
         assert!(serde_json::from_str::<R>(&body)?.ok);
         Ok(())
     }
 
-    fn put(&mut self, path: &str, b: &[u8]) -> Result<String> {
-        self.handle.put(true)?;
-        self.req(path, Some(b), Auth::Authorized)
+    fn put(&mut self, path: &str, b: Option<&[u8]>) -> RegistryResult<String, T::Error> {
+        self.req(Method::PUT, path, b, Auth::Authorized)
     }
 
-    fn get(&mut self, path: &str) -> Result<String> {
-        self.handle.get(true)?;
-        self.req(path, None, Auth::Authorized)
+    fn get(&mut self, path: &str) -> RegistryResult<String, T::Error> {
+        self.req(Method::GET, path, None, Auth::Authorized)
     }
 
-    fn delete(&mut self, path: &str, b: Option<&[u8]>) -> Result<String> {
-        self.handle.custom_request("DELETE")?;
-        self.req(path, b, Auth::Authorized)
+    fn delete(&mut self, path: &str, b: Option<&[u8]>) -> RegistryResult<String, T::Error> {
+        self.req(Method::DELETE, path, b, Auth::Authorized)
     }
 
-    fn req(&mut self, path: &str, body: Option<&[u8]>, authorized: Auth) -> Result<String> {
-        self.handle.url(&format!("{}/api/v1{}", self.host, path))?;
-        let mut headers = List::new();
-        headers.append("Accept: application/json")?;
+    fn api_url(&self, path: &str) -> String {
+        // http::Uri doesn't support file urls without an authority, even though it's optional.
+        // We insert localhost here to make it work.
+        let host = &self.host;
+        if let Some(file_url) = host.strip_prefix("file:///") {
+            format!("file://localhost/{file_url}/api/v1{path}")
+        } else {
+            format!("{host}/api/v1{path}")
+        }
+    }
+
+    fn req(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<&[u8]>,
+        authorized: Auth,
+    ) -> RegistryResult<String, T::Error> {
+        let url = self.api_url(path);
+        let mut request = http::Request::builder()
+            .method(method)
+            .uri(url)
+            .header(http::header::ACCEPT, "application/json");
         if body.is_some() {
-            headers.append("Content-Type: application/json")?;
+            request = request.header(http::header::CONTENT_TYPE, "application/json");
         }
 
         if self.auth_required || authorized == Auth::Authorized {
-            headers.append(&format!("Authorization: {}", self.token()?))?;
+            request = request.header(http::header::AUTHORIZATION, self.token()?);
         }
-        self.handle.http_headers(headers)?;
-        match body {
-            Some(mut body) => {
-                self.handle.upload(true)?;
-                self.handle.in_filesize(body.len() as u64)?;
-                self.handle(&mut |buf| body.read(buf).unwrap_or(0))
-                    .map_err(|e| e.into())
-            }
-            None => self.handle(&mut |_| 0).map_err(|e| e.into()),
-        }
+        let request = request.body(body.unwrap_or_default().to_vec())?;
+        let response = self.handle.request(request).map_err(Error::Transport)?;
+        self.handle(response)
     }
 
-    fn handle(&mut self, read: &mut dyn FnMut(&mut [u8]) -> usize) -> Result<String> {
-        let mut headers = Vec::new();
-        let mut body = Vec::new();
-        {
-            let mut handle = self.handle.transfer();
-            handle.read_function(|buf| Ok(read(buf)))?;
-            handle.write_function(|data| {
-                body.extend_from_slice(data);
-                Ok(data.len())
-            })?;
-            handle.header_function(|data| {
-                // Headers contain trailing \r\n, trim them to make it easier
-                // to work with.
-                let s = String::from_utf8_lossy(data).trim().to_string();
-                // Don't let server sneak extra lines anywhere.
-                if s.contains('\n') {
-                    return true;
-                }
-                headers.push(s);
-                true
-            })?;
-            handle.perform()?;
-        }
-
+    fn handle(&mut self, response: http::Response<Vec<u8>>) -> RegistryResult<String, T::Error> {
+        let (head, body) = response.into_parts();
         let body = String::from_utf8(body)?;
         let errors = serde_json::from_str::<ApiErrorList>(&body)
             .ok()
             .map(|s| s.errors.into_iter().map(|s| s.detail).collect::<Vec<_>>());
 
-        match (self.handle.response_code()?, errors) {
-            (0, None) => Ok(body),
-            (code, None) if is_success(code) => Ok(body),
+        let headers = head
+            .headers
+            .iter()
+            .filter_map(|(k, v)| Some((k, v.to_str().ok()?)))
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect();
+
+        match (head.status, errors) {
+            (code, None) if code.is_success() => Ok(body),
             (code, Some(errors)) => Err(Error::Api {
                 code,
                 headers,
@@ -457,65 +463,11 @@ impl Registry {
     }
 }
 
-fn is_success(code: u32) -> bool {
-    code >= 200 && code < 300
-}
-
-fn status(code: u32) -> String {
-    if is_success(code) {
+fn status(code: StatusCode) -> String {
+    if code.is_success() {
         String::new()
     } else {
-        let reason = reason(code);
-        format!(" (status {code} {reason})")
-    }
-}
-
-fn reason(code: u32) -> &'static str {
-    // Taken from https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
-    match code {
-        100 => "Continue",
-        101 => "Switching Protocol",
-        103 => "Early Hints",
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        203 => "Non-Authoritative Information",
-        204 => "No Content",
-        205 => "Reset Content",
-        206 => "Partial Content",
-        300 => "Multiple Choice",
-        301 => "Moved Permanently",
-        302 => "Found",
-        303 => "See Other",
-        304 => "Not Modified",
-        307 => "Temporary Redirect",
-        308 => "Permanent Redirect",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        402 => "Payment Required",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        406 => "Not Acceptable",
-        407 => "Proxy Authentication Required",
-        408 => "Request Timeout",
-        409 => "Conflict",
-        410 => "Gone",
-        411 => "Length Required",
-        412 => "Precondition Failed",
-        413 => "Payload Too Large",
-        414 => "URI Too Long",
-        415 => "Unsupported Media Type",
-        416 => "Request Range Not Satisfiable",
-        417 => "Expectation Failed",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => "<unknown>",
+        format!(" (status {code})")
     }
 }
 
@@ -526,14 +478,29 @@ pub fn is_url_crates_io(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TokenError {
+    #[error("no upload token found, please run `cargo login`")]
+    Missing,
+
+    #[error("please provide a non-empty token")]
+    Empty,
+
+    #[error(
+        "token contains invalid characters.\nOnly printable ISO-8859-1 characters \
+             are allowed as it is sent in a HTTPS header."
+    )]
+    InvalidCharacters,
+}
+
 /// Checks if a token is valid or malformed.
 ///
 /// This check is necessary to prevent sending tokens which create an invalid HTTP request.
 /// It would be easier to check just for alphanumeric tokens, but we can't be sure that all
 /// registries only create tokens in that format so that is as less restricted as possible.
-pub fn check_token(token: &str) -> Result<()> {
+pub fn check_token(token: &str) -> Result<(), TokenError> {
     if token.is_empty() {
-        return Err(Error::InvalidToken("please provide a non-empty token"));
+        return Err(TokenError::Empty);
     }
     if token.bytes().all(|b| {
         // This is essentially the US-ASCII limitation of
@@ -544,9 +511,6 @@ pub fn check_token(token: &str) -> Result<()> {
     }) {
         Ok(())
     } else {
-        Err(Error::InvalidToken(
-            "token contains invalid characters.\nOnly printable ISO-8859-1 characters \
-             are allowed as it is sent in a HTTPS header.",
-        ))
+        Err(TokenError::InvalidCharacters)
     }
 }

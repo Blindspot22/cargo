@@ -1,6 +1,6 @@
 use crate::command_prelude::*;
 
-use cargo::ops::{self, DocOptions};
+use cargo::ops::{self, DocOptions, OutputFormat};
 
 pub fn cli() -> Command {
     subcommand("doc")
@@ -16,6 +16,11 @@ pub fn cli() -> Command {
             "Don't build documentation for dependencies",
         ))
         .arg(flag("document-private-items", "Document private items"))
+        .arg(
+            opt("output-format", "The output type to write (unstable)")
+                .value_name("FMT")
+                .value_parser(OutputFormat::POSSIBLE_VALUES),
+        )
         .arg_message_format()
         .arg_silent_suggestion()
         .arg_package_spec(
@@ -39,25 +44,32 @@ pub fn cli() -> Command {
         .arg_unit_graph()
         .arg_timings()
         .arg_manifest_path()
-        .arg_lockfile_path()
         .arg_ignore_rust_version()
         .after_help(color_print::cstr!(
-            "Run `<cyan,bold>cargo help doc</>` for more detailed information.\n"
+            "Run `<bright-cyan,bold>cargo help doc</>` for more detailed information.\n"
         ))
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let ws = args.workspace(gctx)?;
-    let mode = CompileMode::Doc {
-        deps: !args.flag("no-deps"),
-        json: false,
+    let output_format = if let Some(output_format) = args._value_of("output-format") {
+        gctx.cli_unstable()
+            .fail_if_stable_opt("--output-format", 13283)?;
+        output_format.parse()?
+    } else {
+        OutputFormat::Html
     };
-    let mut compile_opts = args.compile_options(gctx, mode, Some(&ws), ProfileChecking::Custom)?;
+    let intent = UserIntent::Doc {
+        deps: !args.flag("no-deps"),
+        json: matches!(output_format, OutputFormat::Json),
+    };
+    let mut compile_opts =
+        args.compile_options(gctx, intent, Some(&ws), ProfileChecking::Custom)?;
     compile_opts.rustdoc_document_private_items = args.flag("document-private-items");
 
     let doc_opts = DocOptions {
         open_result: args.flag("open"),
-        output_format: ops::OutputFormat::Html,
+        output_format,
         compile_opts,
     };
     ops::doc(&ws, &doc_opts)?;

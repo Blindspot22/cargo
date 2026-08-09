@@ -40,6 +40,7 @@
 //! ```
 
 #![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_types)]
 #![allow(clippy::print_stderr)]
 #![allow(clippy::print_stdout)]
 
@@ -50,12 +51,13 @@ use std::fs;
 use std::os;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::{self, Duration};
 
-use anyhow::{bail, Result};
-use cargo_util::{is_ci, ProcessError};
+use anyhow::{Result, bail};
+use cargo_util::{ProcessError, is_ci};
 use snapbox::IntoData as _;
 use url::Url;
 
@@ -80,6 +82,8 @@ macro_rules! t {
 }
 
 pub use cargo_util::ProcessBuilder;
+#[doc(inline)]
+pub use snapbox;
 pub use snapbox::file;
 pub use snapbox::str;
 pub use snapbox::utils::current_dir;
@@ -110,15 +114,13 @@ pub mod install;
 pub mod paths;
 pub mod publish;
 pub mod registry;
-pub mod tools;
 
 pub mod prelude {
-    pub use crate::cargo_test;
-    pub use crate::paths::CargoPathExt;
     pub use crate::ArgLineCommandExt;
-    pub use crate::CargoCommandExt;
     pub use crate::ChannelChangerCommandExt;
     pub use crate::TestEnvCommandExt;
+    pub use crate::cargo_test;
+    pub use crate::paths::CargoPathExt;
     pub use snapbox::IntoData;
 }
 
@@ -299,7 +301,7 @@ impl ProjectBuilder {
     }
 
     /// Adds a symlink to a file to the project.
-    pub fn symlink<T: AsRef<Path>>(mut self, dst: T, src: T) -> Self {
+    pub fn symlink(mut self, dst: impl AsRef<Path>, src: impl AsRef<Path>) -> Self {
         self.symlinks.push(SymlinkBuilder::new(
             self.root.root().join(dst),
             self.root.root().join(src),
@@ -308,7 +310,7 @@ impl ProjectBuilder {
     }
 
     /// Create a symlink to a directory
-    pub fn symlink_dir<T: AsRef<Path>>(mut self, dst: T, src: T) -> Self {
+    pub fn symlink_dir(mut self, dst: impl AsRef<Path>, src: impl AsRef<Path>) -> Self {
         self.symlinks.push(SymlinkBuilder::new_dir(
             self.root.root().join(dst),
             self.root.root().join(src),
@@ -368,7 +370,7 @@ impl ProjectBuilder {
 
 impl Project {
     /// Copy the test project from a fixed state
-    pub fn from_template(template_path: impl AsRef<std::path::Path>) -> Self {
+    pub fn from_template(template_path: impl AsRef<Path>) -> Self {
         let root = paths::root();
         let project_root = root.join("case");
         snapbox::dir::copy_template(template_path.as_ref(), &project_root).unwrap();
@@ -415,6 +417,16 @@ impl Project {
             .join(paths::get_lib_filename(name, kind))
     }
 
+    /// Path to a dynamic library.
+    /// ex: `/path/to/cargo/target/cit/t0/foo/target/debug/examples/libex.dylib`
+    pub fn dylib(&self, name: &str) -> PathBuf {
+        self.target_debug_dir().join(format!(
+            "{}{name}{}",
+            env::consts::DLL_PREFIX,
+            env::consts::DLL_SUFFIX
+        ))
+    }
+
     /// Path to a debug binary.
     ///
     /// ex: `$CARGO_TARGET_TMPDIR/cit/t0/foo/target/debug/foo`
@@ -459,7 +471,7 @@ impl Project {
     /// # let p = cargo_test_support::project().build();
     /// p.change_file("src/lib.rs", "fn new_fn() {}");
     /// ```
-    pub fn change_file(&self, path: &str, body: &str) {
+    pub fn change_file(&self, path: impl AsRef<Path>, body: &str) {
         FileBuilder::new(self.root().join(path), body, false).mk()
     }
 
@@ -479,28 +491,6 @@ impl Project {
         let mut p = process(program);
         p.cwd(self.root());
         execs().with_process_builder(p)
-    }
-
-    /// Creates a `ProcessBuilder` to run cargo.
-    ///
-    /// Arguments can be separated by spaces.
-    ///
-    /// For `cargo run`, see [`Project::rename_run`].
-    ///
-    /// # Example:
-    ///
-    /// ```no_run
-    /// # let p = cargo_test_support::project().build();
-    /// p.cargo("build --bin foo").run();
-    /// ```
-    pub fn cargo(&self, cmd: &str) -> Execs {
-        let cargo = cargo_exe();
-        let mut execs = self.process(&cargo);
-        if let Some(ref mut p) = execs.process_builder {
-            p.env("CARGO", cargo);
-            p.arg_line(cmd);
-        }
-        execs
     }
 
     /// Safely run a process after `cargo build`.
@@ -530,7 +520,7 @@ impl Project {
     }
 
     /// Returns the contents of a path in the project root
-    pub fn read_file(&self, path: &str) -> String {
+    pub fn read_file(&self, path: impl AsRef<Path>) -> String {
         let full = self.root().join(path);
         fs::read_to_string(&full)
             .unwrap_or_else(|e| panic!("could not read file {}: {}", full.display(), e))
@@ -572,12 +562,12 @@ pub fn project() -> ProjectBuilder {
 }
 
 /// Generates a project layout in given directory, see [`ProjectBuilder`]
-pub fn project_in(dir: &str) -> ProjectBuilder {
+pub fn project_in(dir: impl AsRef<Path>) -> ProjectBuilder {
     ProjectBuilder::new(paths::root().join(dir).join("foo"))
 }
 
 /// Generates a project layout inside our fake home dir, see [`ProjectBuilder`]
-pub fn project_in_home(name: &str) -> ProjectBuilder {
+pub fn project_in_home(name: impl AsRef<Path>) -> ProjectBuilder {
     ProjectBuilder::new(paths::home().join(name))
 }
 
@@ -611,11 +601,6 @@ pub fn main_file(println: &str, externed_deps: &[&str]) -> String {
     buf
 }
 
-/// Path to the cargo binary
-pub fn cargo_exe() -> PathBuf {
-    snapbox::cmd::cargo_bin("cargo")
-}
-
 /// This is the raw output from the process.
 ///
 /// This is similar to `std::process::Output`, however the `status` is
@@ -623,20 +608,18 @@ pub fn cargo_exe() -> PathBuf {
 /// does not have access to the raw `ExitStatus` because `ProcessError` needs
 /// to be serializable (for the Rustc cache), and `ExitStatus` does not
 /// provide a constructor.
-struct RawOutput {
-    #[allow(dead_code)]
-    code: Option<i32>,
-    stdout: Vec<u8>,
-    #[allow(dead_code)]
-    stderr: Vec<u8>,
+pub struct RawOutput {
+    pub code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 
 /// Run and verify a [`ProcessBuilder`]
 ///
 /// Construct with
 /// - [`execs`]
-/// - [`cargo_process`]
 /// - [`Project`] methods
+/// - `cargo_process` in testsuite
 #[must_use]
 #[derive(Clone)]
 pub struct Execs {
@@ -890,7 +873,7 @@ impl Execs {
     ///
     /// Prefer [`Execs::with_stdout_data`] where possible.
     /// - `with` cannot be snapshotted
-    /// - The absence of `without`` can either mean success or that the string being looked for
+    /// - The absence of `without` can either mean success or that the string being looked for
     ///   changed.
     ///
     /// </div>
@@ -1042,14 +1025,16 @@ impl Execs {
     }
 
     #[track_caller]
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> RawOutput {
         self.ran = true;
         let mut p = (&self.process_builder).clone().unwrap();
         if let Some(stdin) = self.expect_stdin.take() {
             p.stdin(stdin);
         }
-        if let Err(e) = self.match_process(&p) {
-            panic_error(&format!("test failed running {}", p), e);
+
+        match self.match_process(&p) {
+            Err(e) => panic_error(&format!("test failed running {}", p), e),
+            Ok(output) => output,
         }
     }
 
@@ -1057,19 +1042,15 @@ impl Execs {
     /// JSON object on stdout.
     #[track_caller]
     pub fn run_json(&mut self) -> serde_json::Value {
-        self.ran = true;
-        let p = (&self.process_builder).clone().unwrap();
-        match self.match_process(&p) {
-            Err(e) => panic_error(&format!("test failed running {}", p), e),
-            Ok(output) => serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-                panic!(
-                    "\nfailed to parse JSON: {}\n\
+        let output = self.run();
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+            panic!(
+                "\nfailed to parse JSON: {}\n\
                      output was:\n{}\n",
-                    e,
-                    String::from_utf8_lossy(&output.stdout)
-                );
-            }),
-        }
+                e,
+                String::from_utf8_lossy(&output.stdout)
+            );
+        })
     }
 
     #[track_caller]
@@ -1287,6 +1268,28 @@ pub fn basic_lib_manifest(name: &str) -> String {
     )
 }
 
+/// Gets a valid target spec JSON from rustc.
+///
+/// To avoid any hardcoded value, this fetches `x86_64-unknown-none` target
+/// spec JSON directly from `rustc`, as Cargo shouldn't know the JSON schema.
+pub fn target_spec_json() -> &'static str {
+    static TARGET_SPEC_JSON: LazyLock<String> = LazyLock::new(|| {
+        let json = std::process::Command::new("rustc")
+            .env("RUSTC_BOOTSTRAP", "1")
+            .arg("--print")
+            .arg("target-spec-json")
+            .arg("-Zunstable-options")
+            .arg("--target")
+            .arg("x86_64-unknown-none")
+            .output()
+            .expect("rustc --print target-spec-json")
+            .stdout;
+        String::from_utf8(json).expect("utf8 target spec json")
+    });
+
+    TARGET_SPEC_JSON.as_str()
+}
+
 struct RustcInfo {
     verbose_version: String,
     host: String,
@@ -1423,12 +1426,24 @@ pub trait TestEnvCommandExt: Sized {
             .env("__CARGO_TEST_DISABLE_GLOBAL_KNOWN_HOST", "1")
             // Set retry sleep to 1 millisecond.
             .env("__CARGO_TEST_FIXED_RETRY_SLEEP_MS", "1")
+            // Setting this to a large number helps avoid problems with long
+            // paths getting trimmed in snapshot tests.
+            //
+            // When updating this value, keep in mind that the `CARGO_TARGET_DIR`
+            // that gets set when Cargo's tests get run in `rust-lang/rust` can
+            // easily cause path lengths to exceed 200 characters.
+            .env("__CARGO_TEST_TTY_WIDTH_DO_NOT_USE_THIS", "400")
             // Incremental generates a huge amount of data per test, which we
             // don't particularly need. Tests that specifically need to check
             // the incremental behavior should turn this back on.
             .env("CARGO_INCREMENTAL", "0")
             // Don't read the system git config which is out of our control.
             .env("GIT_CONFIG_NOSYSTEM", "1")
+            // See: https://github.com/rust-lang/rust/pull/159857#issuecomment-5119325932
+            // This should be removed once the new build-dir layout is stabilized and the old layout
+            // is removed.
+            .env("__CARGO_TEMPORARY_BUILD_DIR_NEW_LAYOUT_OPT_OUT", "1")
+            .env_remove("CI")
             .env_remove("__CARGO_DEFAULT_LIB_METADATA")
             .env_remove("ALL_PROXY")
             .env_remove("EMAIL")
@@ -1442,6 +1457,9 @@ pub trait TestEnvCommandExt: Sized {
             .env_remove("MAKEFLAGS")
             .env_remove("MFLAGS")
             .env_remove("MSYSTEM") // assume cmd.exe everywhere on windows
+            .env_remove("MANPAGER")
+            .env_remove("PAGER")
+            .env_remove("LESS")
             .env_remove("RUSTC")
             .env_remove("RUST_BACKTRACE")
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
@@ -1449,6 +1467,7 @@ pub trait TestEnvCommandExt: Sized {
             .env_remove("RUSTDOC")
             .env_remove("RUSTDOCFLAGS")
             .env_remove("RUSTFLAGS")
+            .env_remove("RUSTUP_TOOLCHAIN_SOURCE")
             .env_remove("SSH_AUTH_SOCK") // ensure an outer agent is never contacted
             .env_remove("USER") // not set on some rust-lang docker images
             .env_remove("XDG_CONFIG_HOME") // see #2345
@@ -1489,20 +1508,6 @@ impl TestEnvCommandExt for snapbox::cmd::Command {
     }
 }
 
-/// Test the cargo command
-pub trait CargoCommandExt {
-    fn cargo_ui() -> Self;
-}
-
-impl CargoCommandExt for snapbox::cmd::Command {
-    fn cargo_ui() -> Self {
-        Self::new(cargo_exe())
-            .with_assert(compare::assert_ui())
-            .env("CARGO_TERM_COLOR", "always")
-            .test_env()
-    }
-}
-
 /// Add a list of arguments as a line
 pub trait ArgLineCommandExt: Sized {
     fn arg_line(mut self, s: &str) -> Self {
@@ -1528,19 +1533,16 @@ impl ArgLineCommandExt for &mut ProcessBuilder {
     }
 }
 
-impl ArgLineCommandExt for snapbox::cmd::Command {
+impl ArgLineCommandExt for &mut Execs {
     fn arg<S: AsRef<std::ffi::OsStr>>(self, s: S) -> Self {
         self.arg(s)
     }
 }
 
-/// Run `cargo $arg_line`, see [`Execs`]
-pub fn cargo_process(arg_line: &str) -> Execs {
-    let cargo = cargo_exe();
-    let mut p = process(&cargo);
-    p.env("CARGO", cargo);
-    p.arg_line(arg_line);
-    execs().with_process_builder(p)
+impl ArgLineCommandExt for snapbox::cmd::Command {
+    fn arg<S: AsRef<std::ffi::OsStr>>(self, s: S) -> Self {
+        self.arg(s)
+    }
 }
 
 /// Run `git $arg_line`, see [`ProcessBuilder`]
@@ -1565,9 +1567,10 @@ pub fn is_coarse_mtime() -> bool {
     cfg!(target_os = "macos") && is_ci()
 }
 
+/// A way for to increase the cut off for all the time based test.
+///
 /// Some CI setups are much slower then the equipment used by Cargo itself.
 /// Architectures that do not have a modern processor, hardware emulation, etc.
-/// This provides a way for those setups to increase the cut off for all the time based test.
 pub fn slow_cpu_multiplier(main: u64) -> Duration {
     static SLOW_CPU_MULTIPLIER: OnceLock<u64> = OnceLock::new();
     let slow_cpu_multiplier = SLOW_CPU_MULTIPLIER.get_or_init(|| {
@@ -1619,6 +1622,7 @@ pub fn no_such_file_err_msg() -> String {
 /// Helper to retry a function `n` times.
 ///
 /// The function should return `Some` when it is ready.
+#[track_caller]
 pub fn retry<F, R>(n: u32, mut f: F) -> R
 where
     F: FnMut() -> Option<R>,
@@ -1647,6 +1651,7 @@ fn retry_fails() {
 }
 
 /// Helper that waits for a thread to finish, up to `n` tenths of a second.
+#[track_caller]
 pub fn thread_wait_timeout<T>(n: u32, thread: JoinHandle<T>) -> T {
     retry(n, || thread.is_finished().then_some(()));
     thread.join().unwrap()
@@ -1654,6 +1659,7 @@ pub fn thread_wait_timeout<T>(n: u32, thread: JoinHandle<T>) -> T {
 
 /// Helper that runs some function, and waits up to `n` tenths of a second for
 /// it to finish.
+#[track_caller]
 pub fn threaded_timeout<F, R>(n: u32, f: F) -> R
 where
     F: FnOnce() -> R + Send + 'static,
@@ -1730,6 +1736,7 @@ pub fn assert_deps(project: &Project, fingerprint: &str, test_cb: impl Fn(&Path,
     }
 }
 
+#[track_caller]
 pub fn assert_deps_contains(project: &Project, fingerprint: &str, expected: &[(u8, &str)]) {
     assert_deps(project, fingerprint, |info_path, entries| {
         for (e_kind, e_path) in expected {
@@ -1746,4 +1753,22 @@ pub fn assert_deps_contains(project: &Project, fingerprint: &str, expected: &[(u
             }
         }
     })
+}
+
+#[track_caller]
+pub fn assert_deterministic_mtime(path: impl AsRef<Path>) {
+    // Hardcoded value be removed once alexcrichton/tar-rs#420 is merged and released.
+    // See also rust-lang/cargo#16237
+    const DETERMINISTIC_TIMESTAMP: u64 = 1153704088;
+
+    let path = path.as_ref();
+    let mtime = path.metadata().unwrap().modified().unwrap();
+    let timestamp = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert_eq!(
+        timestamp, DETERMINISTIC_TIMESTAMP,
+        "expected deterministic mtime for {path:?}, got {timestamp}"
+    );
 }

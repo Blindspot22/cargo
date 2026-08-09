@@ -1,6 +1,7 @@
 //! Tests for named profiles.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_lib_manifest, project, str};
 
 #[cargo_test]
@@ -87,7 +88,6 @@ fn invalid_profile_name() {
   |
 8 |                 [profile.'.release-lto']
   |                          ^^^^^^^^^^^^^^
-  |
 
 "#]])
         .run();
@@ -326,7 +326,7 @@ fn overrides_with_custom() {
     p.cargo("build -v")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] xxx v0.5.0 ([ROOT]/foo/xxx)
 [COMPILING] yyy v0.5.0 ([ROOT]/foo/yyy)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -589,47 +589,16 @@ See https://doc.rust-lang.org/cargo/reference/profiles.html for more on configur
             .with_stderr_data(&format!(
                 "\
 [ERROR] profile name `{name}` is reserved
-Please choose a different name.
-See https://doc.rust-lang.org/cargo/reference/profiles.html for more on configuring profiles.
+       Please choose a different name.
+       See https://doc.rust-lang.org/cargo/reference/profiles.html for more on configuring profiles.
  --> Cargo.toml:7:30
   |
 7 |                     [profile.{name}]
   |                              {highlight}
-  |
 "
             ))
             .run();
     }
-
-    p.change_file(
-        "Cargo.toml",
-        r#"
-               [package]
-               name = "foo"
-               version = "0.1.0"
-               edition = "2015"
-               authors = []
-
-               [profile.debug]
-               debug = 1
-               inherits = "dev"
-            "#,
-    );
-
-    p.cargo("build")
-        .with_status(101)
-        .with_stderr_data(str![[r#"
-[ERROR] profile name `debug` is reserved
-To configure the default development profile, use the name `dev` as in [profile.dev]
-See https://doc.rust-lang.org/cargo/reference/profiles.html for more on configuring profiles.
- --> Cargo.toml:8:25
-  |
-8 |                [profile.debug]
-  |                         ^^^^^
-  |
-
-"#]])
-        .run();
 }
 
 #[cargo_test]
@@ -695,6 +664,162 @@ fn legacy_rustc() {
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo [..]-C codegen-units=3[..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn test_inherits_dev() {
+    // The `test` profile inherits from `dev` for both local crates and
+    // dependencies.
+    Package::new("somedep", "1.0.0").publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [dependencies]
+            somedep = "1.0"
+
+            [profile.dev]
+            debug = 0
+
+            [profile.test]
+            opt-level = 3
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("test --lib --no-run -v")
+        .with_stderr_data(str![[r#"
+[UPDATING] `dummy-registry` index
+[LOCKING] 1 package to highest compatible version
+[DOWNLOADING] crates ...
+[DOWNLOADED] somedep v1.0.0 (registry `dummy-registry`)
+[COMPILING] somedep v1.0.0
+[RUNNING] `rustc --crate-name somedep [..]`
+[COMPILING] foo v0.1.0 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..]`
+[FINISHED] `test` profile [optimized] target(s) in [ELAPSED]s
+[EXECUTABLE] `[ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
+
+"#]])
+        .with_stderr_does_not_contain("[..] -C debuginfo=0[..]")
+        .with_stderr_does_not_contain("[..] -C opt-level=0[..]")
+        .with_stderr_contains("[..] -C opt-level=3[..]")
+        .run();
+}
+
+#[cargo_test]
+fn change_test_inheritance() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [profile.test]
+            inherits = "release"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("test --lib --no-run")
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `test` profile [optimized] target(s) in [ELAPSED]s
+[EXECUTABLE] unittests src/lib.rs (target/debug/deps/foo-[HASH][EXE])
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn request_test_profile() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("check --profile test")
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn debug_inherits_dev() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [profile.dev]
+            debug = 0
+
+            [profile.debug]
+            opt-level = 3
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("check --profile=debug -v")
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..]`
+[FINISHED] `debug` profile [optimized] target(s) in [ELAPSED]s
+
+"#]])
+        .with_stderr_does_not_contain("[..] -C debuginfo=0[..]")
+        .with_stderr_does_not_contain("[..] -C opt-level=0[..]")
+        .with_stderr_contains("[..] -C opt-level=3[..]")
+        .run();
+}
+
+#[cargo_test]
+fn change_debug_inheritance() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            edition = "2015"
+
+            [profile.debug]
+            inherits = "release"
+            debug = true
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("check --profile=debug")
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FINISHED] `debug` profile [optimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();

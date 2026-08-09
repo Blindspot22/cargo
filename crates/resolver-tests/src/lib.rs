@@ -3,28 +3,29 @@
 //! > crate may make major changes to its APIs or be deprecated without warning.
 
 #![allow(clippy::print_stderr)]
+#![allow(clippy::disallowed_types)]
 
 pub mod helpers;
 pub mod sat;
 
+use std::cell::RefCell;
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::task::Poll;
 use std::time::Instant;
 
-use cargo::core::dependency::DepKind;
-use cargo::core::resolver::{self, ResolveOpts, VersionOrdering, VersionPreferences};
-use cargo::core::Resolve;
-use cargo::core::ResolveVersion;
-use cargo::core::SourceId;
-use cargo::core::{Dependency, PackageId, Registry, Summary};
-use cargo::sources::source::QueryKind;
+use cargo::resolver::Resolve;
+use cargo::resolver::ResolveVersion;
+use cargo::resolver::{self, ResolveOpts, VersionOrdering, VersionPreferences};
 use cargo::sources::IndexSummary;
+use cargo::sources::source::QueryKind;
 use cargo::util::interning::InternedString;
 use cargo::util::{CargoResult, GlobalContext};
+use cargo::workspace::SourceId;
+use cargo::workspace::dependency::DepKind;
+use cargo::workspace::{Dependency, PackageId, Registry, Summary};
 
-use crate::helpers::{dep_req, dep_req_kind, pkg_dep, pkg_id, ToPkgId};
+use crate::helpers::{ToPkgId, dep_req, dep_req_kind, pkg_dep, pkg_id};
 use crate::sat::SatResolver;
 
 use proptest::collection::{btree_map, vec};
@@ -131,27 +132,28 @@ pub fn resolve_with_global_context_raw(
 ) -> CargoResult<Resolve> {
     struct MyRegistry<'a> {
         list: &'a [Summary],
-        used: HashSet<PackageId>,
+        used: RefCell<HashSet<PackageId>>,
     }
     impl<'a> Registry for MyRegistry<'a> {
-        fn query(
-            &mut self,
+        async fn query(
+            &self,
             dep: &Dependency,
             kind: QueryKind,
             f: &mut dyn FnMut(IndexSummary),
-        ) -> Poll<CargoResult<()>> {
+        ) -> CargoResult<()> {
             for summary in self.list.iter() {
                 let matched = match kind {
                     QueryKind::Exact => dep.matches(summary),
-                    QueryKind::Alternatives => true,
+                    QueryKind::RejectedVersions => dep.matches(summary),
+                    QueryKind::AlternativeNames => true,
                     QueryKind::Normalized => true,
                 };
                 if matched {
-                    self.used.insert(summary.package_id());
+                    self.used.borrow_mut().insert(summary.package_id());
                     f(IndexSummary::Candidate(summary.clone()));
                 }
             }
-            Poll::Ready(Ok(()))
+            Ok(())
         }
 
         fn describe_source(&self, _src: SourceId) -> String {
@@ -161,22 +163,18 @@ pub fn resolve_with_global_context_raw(
         fn is_replaced(&self, _src: SourceId) -> bool {
             false
         }
-
-        fn block_until_ready(&mut self) -> CargoResult<()> {
-            Ok(())
-        }
     }
     impl<'a> Drop for MyRegistry<'a> {
         fn drop(&mut self) {
-            if std::thread::panicking() && self.list.len() != self.used.len() {
+            if std::thread::panicking() && self.list.len() != self.used.get_mut().len() {
                 // we found a case that causes a panic and did not use all of the input.
                 // lets print the part of the input that was used for minimization.
                 eprintln!(
-                    "Part used befor drop: {:?}",
+                    "Part used before drop: {:?}",
                     PrettyPrintRegistry(
                         self.list
                             .iter()
-                            .filter(|s| { self.used.contains(&s.package_id()) })
+                            .filter(|s| { self.used.get_mut().contains(&s.package_id()) })
                             .cloned()
                             .collect()
                     )
@@ -186,7 +184,7 @@ pub fn resolve_with_global_context_raw(
     }
     let mut registry = MyRegistry {
         list: registry,
-        used: HashSet::new(),
+        used: RefCell::new(HashSet::new()),
     };
 
     let root_summary =
@@ -206,7 +204,7 @@ pub fn resolve_with_global_context_raw(
         &mut registry,
         &version_prefs,
         ResolveVersion::with_rust_version(None),
-        Some(gctx),
+        gctx,
     );
 
     // The largest test in our suite takes less then 30 secs.
@@ -405,24 +403,24 @@ mod tests {
     #[test]
     fn meta_test_deep_pretty_print_registry() {
         assert_eq!(
-        &format!(
-            "{:?}",
-            PrettyPrintRegistry(vec![
-                pkg!(("foo", "1.0.1") => [dep_req("bar", "1")]),
-                pkg!(("foo", "1.0.0") => [dep_req("bar", "2")]),
-                pkg!(("foo", "2.0.0") => [dep_req("bar", "*")]),
-                pkg!(("bar", "1.0.0") => [dep_req("baz", "=1.0.2"),
+            &format!(
+                "{:?}",
+                PrettyPrintRegistry(vec![
+                    pkg!(("foo", "1.0.1") => [dep_req("bar", "1")]),
+                    pkg!(("foo", "1.0.0") => [dep_req("bar", "2")]),
+                    pkg!(("foo", "2.0.0") => [dep_req("bar", "*")]),
+                    pkg!(("bar", "1.0.0") => [dep_req("baz", "=1.0.2"),
                                           dep_req("other", "1")]),
-                pkg!(("bar", "2.0.0") => [dep_req("baz", "=1.0.1")]),
-                pkg!(("baz", "1.0.2") => [dep_req("other", "2")]),
-                pkg!(("baz", "1.0.1")),
-                pkg!(("cat", "1.0.2") => [dep_req_kind("other", "2", DepKind::Build)]),
-                pkg!(("cat", "1.0.3") => [dep_req_kind("other", "2", DepKind::Development)]),
-                pkg!(("dep_req", "1.0.0")),
-                pkg!(("dep_req", "2.0.0")),
-            ])
-        ),
-        "vec![pkg!((\"foo\", \"1.0.1\") => [dep_req(\"bar\", \"^1\"),]),\
+                    pkg!(("bar", "2.0.0") => [dep_req("baz", "=1.0.1")]),
+                    pkg!(("baz", "1.0.2") => [dep_req("other", "2")]),
+                    pkg!(("baz", "1.0.1")),
+                    pkg!(("cat", "1.0.2") => [dep_req_kind("other", "2", DepKind::Build)]),
+                    pkg!(("cat", "1.0.3") => [dep_req_kind("other", "2", DepKind::Development)]),
+                    pkg!(("dep_req", "1.0.0")),
+                    pkg!(("dep_req", "2.0.0")),
+                ])
+            ),
+            "vec![pkg!((\"foo\", \"1.0.1\") => [dep_req(\"bar\", \"^1\"),]),\
          pkg!((\"foo\", \"1.0.0\") => [dep_req(\"bar\", \"^2\"),]),\
          pkg!((\"foo\", \"2.0.0\") => [dep(\"bar\"),]),\
          pkg!((\"bar\", \"1.0.0\") => [dep_req(\"baz\", \"=1.0.2\"),dep_req(\"other\", \"^1\"),]),\
@@ -433,7 +431,7 @@ mod tests {
          pkg!((\"cat\", \"1.0.3\") => [dep_req_kind(\"other\", \"^2\", DepKind::Development, false),]),\
          pkg!((\"dep_req\", \"1.0.0\")),\
          pkg!((\"dep_req\", \"2.0.0\")),]"
-    )
+        )
     }
 
     /// This test is to test the generator to ensure

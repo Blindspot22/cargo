@@ -33,8 +33,9 @@ Shortcut unknown: [shortcut unknown]
 [Some link](foo.html)
 
 <dl>
-<dt class="option-term" id="option-links---include"><a class="option-anchor" href="#option-links---include"></a><code>--include</code></dt>
-<dd class="option-desc">Testing an <a href="included_link.html">included link</a>.</dd>
+<dt class="option-term" id="option-links---include"><a class="option-anchor" href="#option-links---include"><code>--include</code></a></dt>
+<dd class="option-desc"><p>Testing an <a href="included_link.html">included link</a>.</p>
+</dd>
 
 </dl>
 
@@ -43,9 +44,10 @@ Shortcut unknown: [shortcut unknown]
 
 <dl>
 
-<dt class="option-term" id="option-links---foo-bar"><a class="option-anchor" href="#option-links---foo-bar"></a><code>--foo-bar</code></dt>
-<dd class="option-desc">Example <a href="bar.html">link</a>.
-See <a href="https://example.org/commands/other-cmd.html">other-cmd(1)</a>, <a href="local-cmd.html">local-cmd(1)</a></dd>
+<dt class="option-term" id="option-links---foo-bar"><a class="option-anchor" href="#option-links---foo-bar"><code>--foo-bar</code></a></dt>
+<dd class="option-desc"><p>Example <a href="bar.html">link</a>.
+See <a href="https://example.org/commands/other-cmd.html">other-cmd(1)</a>, <a href="local-cmd.html">local-cmd(1)</a></p>
+</dd>
 
 
 </dl>

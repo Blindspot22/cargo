@@ -1,6 +1,6 @@
 //! Tests for profile overrides (build-override and per-package overrides).
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_lib_manifest, basic_manifest, project, str};
 
@@ -33,7 +33,7 @@ fn profile_override_basic() {
 
     p.cargo("check -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] bar v0.5.0 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name bar [..] -C opt-level=3 [..]`
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -78,7 +78,7 @@ fn profile_override_warnings() {
 [WARNING] profile package spec `bar@1.2.3` in profile `dev` has a version or URL that does not match any of the packages: bar v0.5.0 ([ROOT]/foo/bar)
 [WARNING] profile package spec `bart` in profile `dev` did not match any packages
 
-	Did you mean `bar`?
+[HELP] a package with a similar name exists: `bar`
 [WARNING] profile package spec `no-suggestion` in profile `dev` did not match any packages
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -226,7 +226,7 @@ fn profile_override_hierarchy() {
 
     p.cargo("build -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] m3 v0.5.0 ([ROOT]/foo/m3)
 [COMPILING] dep v0.5.0 ([ROOT]/dep)
 [RUNNING] `rustc --crate-name m3 --edition=2015 m3/src/lib.rs [..] --crate-type lib --emit=[..]link[..]-C codegen-units=4 [..]`

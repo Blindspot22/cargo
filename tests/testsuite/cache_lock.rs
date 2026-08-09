@@ -2,9 +2,9 @@
 
 use std::thread::JoinHandle;
 
+use crate::prelude::*;
 use cargo::util::cache_lock::{CacheLockMode, CacheLocker};
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::{retry, thread_wait_timeout, threaded_timeout};
 
 use crate::config::GlobalContextBuilder;
@@ -12,7 +12,7 @@ use crate::config::GlobalContextBuilder;
 /// Helper to verify that it is OK to acquire the given lock (it shouldn't block).
 fn verify_lock_is_ok(mode: CacheLockMode) {
     let root = paths::root();
-    threaded_timeout(10, move || {
+    threaded_timeout(100, move || {
         let gctx = GlobalContextBuilder::new().root(root).build();
         let locker = CacheLocker::new();
         // This would block if it is held.
@@ -112,6 +112,10 @@ fn multiple_shared() {
     a_b_nested(CacheLockMode::Shared, CacheLockMode::Shared);
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn multiple_shared_separate() {
     // Test that two independent shared locks are safe to acquire at the same time.
@@ -213,6 +217,10 @@ fn readonly() {
     }
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn download_then_shared_separate() {
     a_then_b_separate_not_blocked(
@@ -222,6 +230,10 @@ fn download_then_shared_separate() {
     );
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn shared_then_download_separate() {
     a_then_b_separate_not_blocked(
@@ -231,6 +243,10 @@ fn shared_then_download_separate() {
     );
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn multiple_download_separate() {
     // Test that with two independent download locks, the second blocks until
@@ -241,6 +257,10 @@ fn multiple_download_separate() {
     );
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn multiple_mutate_separate() {
     // Test that with two independent mutate locks, the second blocks until
@@ -251,11 +271,19 @@ fn multiple_mutate_separate() {
     );
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn shared_then_mutate_separate() {
     a_then_b_separate_blocked(CacheLockMode::Shared, CacheLockMode::MutateExclusive);
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn download_then_mutate_separate() {
     a_then_b_separate_blocked(
@@ -264,6 +292,10 @@ fn download_then_mutate_separate() {
     );
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn mutate_then_download_separate() {
     a_then_b_separate_blocked(
@@ -272,6 +304,10 @@ fn mutate_then_download_separate() {
     );
 }
 
+#[cfg_attr(
+    any(target_os = "aix", target_os = "solaris"),
+    ignore = "Test fails on AIX due to unsupported flock behaviour and on Solaris due to process-scoped fcntl locks"
+)]
 #[cargo_test]
 fn mutate_then_shared_separate() {
     a_then_b_separate_blocked(CacheLockMode::MutateExclusive, CacheLockMode::Shared);

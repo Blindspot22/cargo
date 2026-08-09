@@ -7,14 +7,15 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str;
 
+use crate::prelude::*;
+use crate::utils::cargo_exe;
+use crate::utils::cargo_process;
+use crate::utils::tools::echo_subcommand;
 use cargo_test_support::basic_manifest;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
+use cargo_test_support::rustc_host;
 use cargo_test_support::str;
-use cargo_test_support::tools::echo_subcommand;
-use cargo_test_support::{
-    basic_bin_manifest, cargo_exe, cargo_process, paths, project, project_in_home,
-};
+use cargo_test_support::{basic_bin_manifest, paths, project, project_in_home};
 use cargo_util::paths::join_paths;
 
 fn path() -> Vec<PathBuf> {
@@ -99,10 +100,7 @@ fn list_command_looks_at_path() {
     let mut path = path();
     path.push(proj.root().join("path-test"));
     let path = env::join_paths(path.iter()).unwrap();
-    let output = cargo_process("-v --list")
-        .env("PATH", &path)
-        .exec_with_output()
-        .unwrap();
+    let output = cargo_process("-v --list").env("PATH", &path).run();
     let output = str::from_utf8(&output.stdout).unwrap();
     assert!(
         output.contains("\n    1                   "),
@@ -127,8 +125,7 @@ fn list_command_looks_at_path_case_mismatch() {
     let output = cargo_process("-v --list")
         .env("Path", &path)
         .env_remove("PATH")
-        .exec_with_output()
-        .unwrap();
+        .run();
     let output = str::from_utf8(&output.stdout).unwrap();
     assert!(
         output.contains("\n    1                   "),
@@ -174,10 +171,7 @@ fn list_command_resolves_symlinks() {
     let mut path = path();
     path.push(proj.root().join("path-test"));
     let path = env::join_paths(path.iter()).unwrap();
-    let output = cargo_process("-v --list")
-        .env("PATH", &path)
-        .exec_with_output()
-        .unwrap();
+    let output = cargo_process("-v --list").env("PATH", &path).run();
     let output = str::from_utf8(&output.stdout).unwrap();
     assert!(
         output.contains("\n    2                   "),
@@ -193,10 +187,10 @@ fn find_closest_capital_c_to_c() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `C`
 
-	Did you mean `c`?
+[HELP] a command with a similar name exists: `c`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `C` with `cargo search cargo-C`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `C` with `cargo search cargo-C`
 
 "#]])
         .run();
@@ -209,10 +203,26 @@ fn find_closest_capital_b_to_b() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `B`
 
-	Did you mean `b`?
+[HELP] a command with a similar name exists: `b`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `B` with `cargo search cargo-B`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `B` with `cargo search cargo-B`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cargo_rustfmt_suggestion() {
+    cargo_process("rustfmt")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] no such command: `rustfmt`
+
+[HELP] a command with a similar name exists: `fmt`
+
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `rustfmt` with `cargo search cargo-rustfmt`
 
 "#]])
         .run();
@@ -225,10 +235,10 @@ fn find_closest_biuld_to_build() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `biuld`
 
-	Did you mean `build`?
+[HELP] a command with a similar name exists: `build`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `biuld` with `cargo search cargo-biuld`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `biuld` with `cargo search cargo-biuld`
 
 "#]])
         .run();
@@ -283,10 +293,10 @@ fn find_closest_alias() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `myalais`
 
-	Did you mean `myalias`?
+[HELP] a command with a similar name exists: `myalias`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `myalais` with `cargo search cargo-myalais`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `myalais` with `cargo search cargo-myalais`
 
 "#]])
         .run();
@@ -297,8 +307,8 @@ fn find_closest_alias() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `myalais`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `myalais` with `cargo search cargo-myalais`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `myalais` with `cargo search cargo-myalais`
 
 "#]])
         .run();
@@ -313,8 +323,8 @@ fn find_closest_dont_correct_nonsense() {
 		.with_stderr_data(str![[r#"
 [ERROR] no such command: `there-is-no-way-that-there-is-a-command-close-to-this`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `there-is-no-way-that-there-is-a-command-close-to-this` with `cargo search cargo-there-is-no-way-that-there-is-a-command-close-to-this`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `there-is-no-way-that-there-is-a-command-close-to-this` with `cargo search cargo-there-is-no-way-that-there-is-a-command-close-to-this`
 
 "#]])
         .run();
@@ -327,8 +337,8 @@ fn displays_subcommand_on_error() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `invalid-command`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `invalid-command` with `cargo search cargo-invalid-command`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `invalid-command` with `cargo search cargo-invalid-command`
 
 "#]])
         .run();
@@ -381,7 +391,7 @@ fn cargo_subcommand_env() {
     p.cargo("build").run();
     assert!(p.bin("cargo-envtest").is_file());
 
-    let cargo = cargo_exe().canonicalize().unwrap();
+    let cargo = cargo_exe();
     let mut path = path();
     path.push(target_dir.clone());
     let path = env::join_paths(path.iter()).unwrap();
@@ -394,14 +404,15 @@ fn cargo_subcommand_env() {
     // Check that subcommands inherit an overridden $CARGO
     let envtest_bin = target_dir
         .join("cargo-envtest")
-        .with_extension(std::env::consts::EXE_EXTENSION)
-        .canonicalize()
-        .unwrap();
+        .with_extension(std::env::consts::EXE_EXTENSION);
     let envtest_bin = envtest_bin.to_str().unwrap();
+    // Previously, `$CARGO` would be left at `envtest_bin`. However, with the
+    // fix for #15099, `$CARGO` is now overwritten with the path to the current
+    // exe when it is detected to be a cargo binary.
     cargo_process("envtest")
         .env("PATH", &path)
         .env(cargo::CARGO_ENV, &envtest_bin)
-        .with_stdout_data(format!("{}\n", envtest_bin).raw().raw())
+        .with_stdout_data(format!("{}\n", cargo.display()).raw())
         .run();
 }
 
@@ -556,8 +567,7 @@ fn subcommand_leading_plus_output_contains() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `+nightly`
 
-	Cargo does not handle `+toolchain` directives.
-	Did you mean to invoke `cargo` through `rustup` instead?
+[HELP] invoke `cargo` through `rustup` to handle `+toolchain` directives
 
 "#]])
         .run();
@@ -570,11 +580,93 @@ fn full_did_you_mean() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `bluid`
 
-	Did you mean `build`?
+[HELP] a command with a similar name exists: `build`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `bluid` with `cargo search cargo-bluid`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `bluid` with `cargo search cargo-bluid`
 
 "#]])
+        .run();
+}
+
+#[cargo_test]
+fn overwrite_cargo_environment_variable() {
+    let rustc_host = rustc_host();
+    // If passed arguments `arg1 arg2 ...`, this program runs them as a command.
+    // If passed no arguments, this program simply prints `$CARGO`.
+    let p = project()
+        .file("Cargo.toml", &basic_manifest("foo", "1.0.0"))
+        .file(
+            "src/main.rs",
+            r#"
+                fn main() {
+                    let mut args = std::env::args().skip(1);
+                    if let Some(arg1) = args.next() {
+                        let status = std::process::Command::new(arg1)
+                            .args(args)
+                            .status()
+                            .unwrap();
+                        assert!(status.success());
+                    } else {
+                        eprintln!("{}", std::env::var("CARGO").unwrap());
+                    }
+                }
+            "#,
+        )
+        .build();
+
+    // Create two other cargo binaries in the project root, one with the wrong
+    // name and one with the right name.
+    let cargo_exe = crate::utils::cargo_exe();
+    let wrong_name_path = p
+        .root()
+        .join(format!("wrong_name{}", env::consts::EXE_SUFFIX));
+    let other_cargo_path = p.root().join(cargo_exe.file_name().unwrap());
+    std::fs::hard_link(&cargo_exe, &wrong_name_path).unwrap();
+    std::fs::hard_link(&cargo_exe, &other_cargo_path).unwrap();
+
+    // The output of each of the following commands should be `path-to-cargo`:
+    // ```
+    // cargo run
+    // cargo run -- cargo run
+    // cargo run -- wrong_name run
+    // ```
+
+    let cargo = cargo_exe.display().to_string();
+    let wrong_name = wrong_name_path.display().to_string();
+    let stderr_cargo = format!(
+        "{}[EXE]\n",
+        cargo_exe
+            .with_extension("")
+            .to_str()
+            .unwrap()
+            .replace(rustc_host, "[HOST_TARGET]")
+    );
+
+    for cmd in [
+        "run",
+        &format!("run -- {cargo} run"),
+        &format!("run -- {wrong_name} run"),
+    ] {
+        p.cargo(cmd).with_stderr_contains(&stderr_cargo).run();
+    }
+
+    // The output of the following command should be `path-to-other-cargo`:
+    // ```
+    // cargo run -- other_cargo run
+    // ```
+
+    let other_cargo = other_cargo_path.display().to_string();
+    let stderr_other_cargo = format!(
+        "{}[EXE]\n",
+        other_cargo_path
+            .with_extension("")
+            .to_str()
+            .unwrap()
+            .replace(p.root().parent().unwrap().to_str().unwrap(), "[ROOT]")
+    );
+
+    p.cargo(&format!("run -- {other_cargo} run"))
+        .with_stderr_contains(stderr_other_cargo)
         .run();
 }

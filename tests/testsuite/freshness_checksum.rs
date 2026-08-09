@@ -6,8 +6,8 @@ use std::net::TcpListener;
 use std::process::Stdio;
 use std::thread;
 
+use crate::prelude::*;
 use cargo_test_support::assert_deps_contains;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{
     basic_lib_manifest, basic_manifest, project, rustc_host, rustc_host_env, str,
@@ -291,7 +291,7 @@ fn rebuild_sub_package_then_while_package() {
     p.cargo("build -Zchecksum-freshness")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] b v0.0.1 ([ROOT]/foo/b)
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -322,10 +322,10 @@ fn rebuild_sub_package_then_while_package() {
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(str![[r#"
 [FRESH] b v0.0.1 ([ROOT]/foo/b)
-[DIRTY] a v0.0.1 ([ROOT]/foo/a): the dependency b was rebuilt ([TIME_DIFF_AFTER_LAST_BUILD])
+[DIRTY] a v0.0.1 ([ROOT]/foo/a): the dependency `b` was rebuilt ([TIME_DIFF_AFTER_LAST_BUILD])
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [RUNNING] `rustc --crate-name a [..]
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the dependency b was rebuilt ([TIME_DIFF_AFTER_LAST_BUILD])
+[DIRTY] foo v0.0.1 ([ROOT]/foo): the dependency `b` was rebuilt ([TIME_DIFF_AFTER_LAST_BUILD])
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo [..] src/lib.rs [..]
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -555,7 +555,7 @@ ftest off
 
 "#]])
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] dep_crate v0.0.1 ([ROOT]/foo/dep_crate)
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -588,7 +588,7 @@ ftest on
 
 "#]])
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] dep_crate v0.0.1 ([ROOT]/foo/dep_crate)
 [COMPILING] b v0.0.1 ([ROOT]/foo/b)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -765,14 +765,7 @@ feature on
 fn rebuild_tests_if_lib_changes() {
     let p = project()
         .file("src/lib.rs", "pub fn foo() {}")
-        .file(
-            "tests/foo.rs",
-            r#"
-                extern crate foo;
-                #[test]
-                fn test() { foo::foo(); }
-            "#,
-        )
+        .file("tests/foo-test.rs", "extern crate foo;")
         .build();
 
     p.cargo("build -Zchecksum-freshness")
@@ -784,21 +777,18 @@ fn rebuild_tests_if_lib_changes() {
 
     p.change_file("src/lib.rs", "");
 
-    p.cargo("build -Zchecksum-freshness -v")
+    p.cargo("build -Zchecksum-freshness")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .run();
-    p.cargo("test -Zchecksum-freshness -v")
+    p.cargo("test -Zchecksum-freshness -v --test foo-test")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
-        .with_status(101)
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the dependency foo was rebuilt ([TIME_DIFF_AFTER_LAST_BUILD])
+[DIRTY] foo v0.0.1 ([ROOT]/foo): the dependency `foo` was rebuilt ([TIME_DIFF_AFTER_LAST_BUILD])
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `rustc --crate-name foo [..]
-[RUNNING] `rustc --crate-name foo [..]
-error[E0425]: cannot find function `foo` in crate `foo`
-...
-[ERROR] could not compile `foo` (test "foo") due to 1 previous error
-...
+[RUNNING] `rustc --crate-name foo_test [..]`
+[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[RUNNING] `[ROOT]/foo/target/debug/deps/foo_test-[HASH][EXE]`
+
 "#]])
         .run();
 }
@@ -994,7 +984,7 @@ fn same_build_dir_cached_packages() {
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .cwd("a1")
         .with_stderr_data(str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [COMPILING] d v0.0.1 ([ROOT]/foo/d)
 [COMPILING] c v0.0.1 ([ROOT]/foo/c)
 [COMPILING] b v0.0.1 ([ROOT]/foo/b)
@@ -1007,7 +997,7 @@ fn same_build_dir_cached_packages() {
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .cwd("a2")
         .with_stderr_data(str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [COMPILING] a2 v0.0.1 ([ROOT]/foo/a2)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1109,7 +1099,7 @@ new desc
 
 "#]])
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the metadata changed
+[DIRTY] foo v0.0.1 ([ROOT]/foo): the environment variable CARGO_PKG_DESCRIPTION changed
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc [..]
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1519,7 +1509,6 @@ fn changing_rustflags_is_cached() {
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .env("RUSTFLAGS", "-C linker=cc")
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the rustflags changed
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc [..]
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1530,9 +1519,7 @@ fn changing_rustflags_is_cached() {
     p.cargo("build -Zchecksum-freshness -v")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the rustflags changed
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `rustc [..] src/lib.rs [..]
+[FRESH] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -1541,9 +1528,48 @@ fn changing_rustflags_is_cached() {
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .env("RUSTFLAGS", "-C linker=cc")
         .with_stderr_data(str![[r#"
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the rustflags changed
+[FRESH] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test(nightly, reason = "requires -Zchecksum-hash-algorithm")]
+fn changing_rustc_extra_flags_is_cached() {
+    let p = project().file("src/lib.rs", "").build();
+
+    // This isn't ever cached, we always have to recompile
+    p.cargo("rustc -Zchecksum-freshness")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    p.cargo("rustc -Zchecksum-freshness -v -- -C linker=cc")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc [..]
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.cargo("rustc -Zchecksum-freshness -v")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .with_stderr_data(str![[r#"
+[FRESH] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    p.cargo("rustc -Zchecksum-freshness -v -- -C linker=cc")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .with_stderr_data(str![[r#"
+[FRESH] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -1581,7 +1607,7 @@ fn reuse_panic_build_dep_test() {
     p.cargo("test -Zchecksum-freshness --lib --no-run -v")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name bar [..]
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -1643,7 +1669,7 @@ fn reuse_panic_pm() {
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name bar [..] -C panic=abort [..]
 [RUNNING] `rustc --crate-name bar [..]
@@ -1699,10 +1725,10 @@ fn bust_patched_dep() {
 [DIRTY] registry1 v0.1.0 ([ROOT]/foo/reg1new): file size changed (0 != 11) for `reg1new/src/lib.rs`
 [COMPILING] registry1 v0.1.0 ([ROOT]/foo/reg1new)
 [RUNNING] `rustc --crate-name registry1 [..]
-[DIRTY] registry2 v0.1.0: the dependency registry1 was rebuilt
+[DIRTY] registry2 v0.1.0: the dependency `registry1` was rebuilt
 [COMPILING] registry2 v0.1.0
 [RUNNING] `rustc --crate-name registry2 [..]
-[DIRTY] foo v0.0.1 ([ROOT]/foo): the dependency registry2 was rebuilt
+[DIRTY] foo v0.0.1 ([ROOT]/foo): the dependency `registry2` was rebuilt
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo [..]
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1969,57 +1995,6 @@ fn script_fails_stay_dirty() {
 }
 
 #[cargo_test(nightly, reason = "requires -Zchecksum-hash-algorithm")]
-fn metadata_change_invalidates() {
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [package]
-            name = "foo"
-            version = "0.1.0"
-            edition = "2015"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("build -Zchecksum-freshness")
-        .masquerade_as_nightly_cargo(&["checksum-freshness"])
-        .run();
-
-    for attr in &[
-        "authors = [\"foo\"]",
-        "description = \"desc\"",
-        "homepage = \"https://example.com\"",
-        "repository =\"https://example.com\"",
-    ] {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(p.root().join("Cargo.toml"))
-            .unwrap();
-        writeln!(file, "{}", attr).unwrap();
-        p.cargo("build -Zchecksum-freshness")
-            .masquerade_as_nightly_cargo(&["checksum-freshness"])
-            .with_stderr_data(str![[r#"
-[COMPILING] foo v0.1.0 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-
-"#]])
-            .run();
-    }
-    p.cargo("build -Zchecksum-freshness -v")
-        .masquerade_as_nightly_cargo(&["checksum-freshness"])
-        .with_stderr_data(str![[r#"
-[FRESH] foo v0.1.0 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-
-"#]])
-        .run();
-    assert_eq!(p.glob("target/debug/deps/libfoo-*.rlib").count(), 1);
-}
-
-#[cargo_test(nightly, reason = "requires -Zchecksum-hash-algorithm")]
 fn edition_change_invalidates() {
     const MANIFEST: &str = r#"
         [package]
@@ -2055,6 +2030,8 @@ fn edition_change_invalidates() {
     p.cargo("build -Zchecksum-freshness")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(str![[r#"
+[WARNING] Cargo.toml: `edition` is set on library `foo` which is deprecated
+[WARNING] `foo` (manifest) generated 1 warning
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -2063,6 +2040,8 @@ fn edition_change_invalidates() {
     p.cargo("build -Zchecksum-freshness -v")
         .masquerade_as_nightly_cargo(&["checksum-freshness"])
         .with_stderr_data(str![[r#"
+[WARNING] Cargo.toml: `edition` is set on library `foo` which is deprecated
+[WARNING] `foo` (manifest) generated 1 warning
 [FRESH] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -2435,8 +2414,7 @@ LLVM version: 9.0
             .cargo("check -Zchecksum-freshness --message-format=json")
             .masquerade_as_nightly_cargo(&["checksum-freshness"])
             .env("RUSTC", compiler.bin(version))
-            .exec_with_output()
-            .unwrap();
+            .run();
         // Collect the filenames generated.
         let mut artifacts: Vec<_> = std::str::from_utf8(&output.stdout)
             .unwrap()
@@ -2628,7 +2606,6 @@ fn lld_is_fresh() {
             r#"
                 [target.x86_64-pc-windows-msvc]
                 linker = "rust-lld"
-                rustflags = ["-C", "link-arg=-fuse-ld=lld"]
             "#,
         )
         .file(
@@ -2985,6 +2962,66 @@ fn use_checksum_cache_in_cargo_home() {
 ...
 [ERROR] could not compile `foo` (lib) due to 1 previous error
 ...
+"#]])
+        .run();
+}
+
+#[cargo_test(nightly, reason = "requires -Zchecksum-hash-algorithm")]
+fn incremental_build_script_execution_got_new_mtime_and_cargo_check() {
+    // See https://github.com/rust-lang/cargo/issues/16104
+    let p = project()
+        .file("src/lib.rs", "")
+        .file("touch-me", "")
+        .file(
+            "build.rs",
+            r#"fn main() { println!("cargo::rerun-if-changed=touch-me") }"#,
+        )
+        .build();
+
+    p.cargo("check -Zchecksum-freshness")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .env("CARGO_INCREMENTAL", "1")
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.change_file("touch-me", "oops");
+
+    // The first one is expected to rerun build script
+    p.cargo("check -Zchecksum-freshness -v")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .env("CARGO_INCREMENTAL", "1")
+        .with_stderr_data(str![[r#"
+[DIRTY] foo v0.0.1 ([ROOT]/foo): the file `touch-me` has changed ([TIME_DIFF_AFTER_LAST_BUILD])
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
+[RUNNING] `rustc --crate-name foo [..]`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    // subsequent cargo check gets stuck...
+    p.cargo("check -Zchecksum-freshness -v")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .env("CARGO_INCREMENTAL", "1")
+        .with_stderr_data(str![[r#"
+[FRESH] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.cargo("check -Zchecksum-freshness -v")
+        .masquerade_as_nightly_cargo(&["checksum-freshness"])
+        .env("CARGO_INCREMENTAL", "1")
+        .with_stderr_data(str![[r#"
+[FRESH] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
 "#]])
         .run();
 }

@@ -1,7 +1,7 @@
 //! Tests for build.rs rerun-if-env-changed and rustc-env
 
+use crate::prelude::*;
 use cargo_test_support::basic_manifest;
-use cargo_test_support::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::sleep_ms;
 use cargo_test_support::str;
@@ -129,8 +129,8 @@ fn rustc_bootstrap() {
     p.cargo("check")
         .with_stderr_data(str![[r#"
 [COMPILING] has-dashes v0.0.1 ([ROOT]/foo)
-[ERROR] Cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
-[NOTE] Crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
+[ERROR] cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
+[NOTE] crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
 [HELP] If you're sure you want to do this in your project, set the environment variable `RUSTC_BOOTSTRAP=has_dashes` before running cargo instead.
 
 "#]])
@@ -144,8 +144,8 @@ fn rustc_bootstrap() {
         .env("RUSTC_BOOTSTRAP", "1")
         .with_stderr_data(str![[r#"
 [COMPILING] has-dashes v0.0.1 ([ROOT]/foo)
-[WARNING] has-dashes@0.0.1: Cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
-[NOTE] Crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
+[WARNING] has-dashes@0.0.1: cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
+[NOTE] crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -154,8 +154,8 @@ fn rustc_bootstrap() {
     p.cargo("check")
         .env("RUSTC_BOOTSTRAP", "has_dashes")
         .with_stderr_data(str![[r#"
-[WARNING] has-dashes@0.0.1: Cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
-[NOTE] Crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
+[WARNING] has-dashes@0.0.1: cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
+[NOTE] crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -164,8 +164,8 @@ fn rustc_bootstrap() {
     p.cargo("check")
         .env("RUSTC_BOOTSTRAP", "bar")
         .with_stderr_data(str![[r#"
-[ERROR] Cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
-[NOTE] Crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
+[ERROR] cannot set `RUSTC_BOOTSTRAP=1` from build script of `has-dashes v0.0.1 ([ROOT]/foo)`.
+[NOTE] crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
 [HELP] If you're sure you want to do this in your project, set the environment variable `RUSTC_BOOTSTRAP=has_dashes` before running cargo instead.
 
 "#]])
@@ -189,8 +189,8 @@ fn rustc_bootstrap() {
         .env("RUSTC_BOOTSTRAP", "1")
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
-[WARNING] foo@0.0.1: Cannot set `RUSTC_BOOTSTRAP=1` from build script of `foo v0.0.1 ([ROOT]/foo)`.
-[NOTE] Crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
+[WARNING] foo@0.0.1: cannot set `RUSTC_BOOTSTRAP=1` from build script of `foo v0.0.1 ([ROOT]/foo)`.
+[NOTE] crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -199,8 +199,8 @@ fn rustc_bootstrap() {
     p.cargo("check")
         .env("RUSTC_BOOTSTRAP", "foo")
         .with_stderr_data(str![[r#"
-[ERROR] Cannot set `RUSTC_BOOTSTRAP=1` from build script of `foo v0.0.1 ([ROOT]/foo)`.
-[NOTE] Crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
+[ERROR] cannot set `RUSTC_BOOTSTRAP=1` from build script of `foo v0.0.1 ([ROOT]/foo)`.
+[NOTE] crates cannot set `RUSTC_BOOTSTRAP` themselves, as doing so would subvert the stability guarantees of Rust for your project.
 [HELP] If you're sure you want to do this in your project, set the environment variable `RUSTC_BOOTSTRAP=1` before running cargo instead.
 
 "#]])
@@ -382,4 +382,212 @@ fn rustc_cfg_with_and_without_value() {
 ...",
     );
     check.run();
+}
+
+#[cargo_test]
+fn rerun_if_env_exists_in_config() {
+    let p = project()
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "build.rs",
+            r#"
+            fn main() {
+                println!("cargo::rerun-if-env-changed=FOO");
+            }
+        "#,
+        )
+        .file(
+            ".cargo/config.toml",
+            r#"
+            [env]
+            FOO = "foo"
+            "#,
+        )
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.cargo(r#"check --config 'env.FOO="bar"'"#)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn rerun_if_env_newly_added_in_config() {
+    let p = project()
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "build.rs",
+            r#"
+            fn main() {
+                println!("cargo::rerun-if-env-changed=FOO");
+            }
+        "#,
+        )
+        .build();
+
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    p.cargo(r#"check --config 'env.FOO="foo"'"#)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn build_script_debug_assertions_dev() {
+    // Test that CARGO_CFG_DEBUG_ASSERTIONS is set in dev profile (default)
+    let build_rs = r#"
+        fn main() {
+            let has_debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
+            assert!(has_debug_assertions, "CARGO_CFG_DEBUG_ASSERTIONS should be set in dev profile");
+        }
+    "#;
+
+    let p = project()
+        .file("src/lib.rs", r#""#)
+        .file("build.rs", build_rs)
+        .build();
+
+    // Default dev profile has debug-assertions enabled
+    p.cargo("check").run();
+}
+
+#[cargo_test]
+fn build_script_debug_assertions_release() {
+    // Test that CARGO_CFG_DEBUG_ASSERTIONS is NOT set in release profile (default)
+    let build_rs = r#"
+        fn main() {
+            let has_debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
+            assert!(!has_debug_assertions, "CARGO_CFG_DEBUG_ASSERTIONS should NOT be set in release profile");
+        }
+    "#;
+
+    let p = project()
+        .file("src/lib.rs", r#""#)
+        .file("build.rs", build_rs)
+        .build();
+
+    // Release profile has debug-assertions disabled by default
+    p.cargo("check --release").run();
+}
+
+#[cargo_test]
+fn build_script_debug_assertions_override_dev() {
+    // Test that CARGO_CFG_DEBUG_ASSERTIONS respects profile overrides
+    // Dev profile with debug-assertions explicitly DISABLED
+    let build_rs = r#"
+        fn main() {
+            let has_debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
+            assert!(!has_debug_assertions, "CARGO_CFG_DEBUG_ASSERTIONS should NOT be set when dev profile disables it");
+        }
+    "#;
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+
+                [profile.dev]
+                debug-assertions = false
+            "#,
+        )
+        .file("src/lib.rs", r#""#)
+        .file("build.rs", build_rs)
+        .build();
+
+    // Dev profile with debug-assertions explicitly disabled
+    p.cargo("check").run();
+}
+
+#[cargo_test]
+fn build_script_debug_assertions_override_release() {
+    // Test that CARGO_CFG_DEBUG_ASSERTIONS respects profile overrides
+    // Release profile with debug-assertions explicitly ENABLED
+    let build_rs = r#"
+        fn main() {
+            let has_debug_assertions = std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
+            assert!(has_debug_assertions, "CARGO_CFG_DEBUG_ASSERTIONS should be set when release profile enables it");
+        }
+    "#;
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+
+                [profile.release]
+                debug-assertions = true
+            "#,
+        )
+        .file("src/lib.rs", r#""#)
+        .file("build.rs", build_rs)
+        .build();
+
+    // Release profile with debug-assertions explicitly enabled
+    p.cargo("check --release").run();
+}
+
+#[cargo_test]
+fn build_script_debug_assertions_build_override() {
+    let build_rs = r#"
+        fn main() {
+            let profile = std::env::var("PROFILE").unwrap();
+            if profile == "debug" {
+                assert!(!cfg!(debug_assertions));
+            } else if profile == "release" {
+                assert!(cfg!(debug_assertions));
+            }
+        }
+    "#;
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2024"
+
+                [profile.dev.build-override]
+                debug-assertions = false
+
+                [profile.release.build-override]
+                debug-assertions = true
+            "#,
+        )
+        .file("src/lib.rs", r#""#)
+        .file("build.rs", build_rs)
+        .build();
+
+    p.cargo("check").run();
+    p.cargo("check --release").run();
 }

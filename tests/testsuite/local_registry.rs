@@ -2,9 +2,9 @@
 
 use std::fs;
 
+use crate::prelude::*;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
-use cargo_test_support::registry::{registry_path, Package};
+use cargo_test_support::registry::{Package, registry_path};
 use cargo_test_support::{basic_manifest, project, str, t};
 
 fn setup() {
@@ -53,7 +53,7 @@ fn simple() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [UNPACKING] bar v0.0.1 (registry `[ROOT]/registry`)
 [COMPILING] bar v0.0.1
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -74,7 +74,7 @@ fn simple() {
 fn not_found() {
     setup();
     // Publish a package so that the directory hierarchy is created.
-    // Note, however, that we declare a dependency on baZ.
+    // Note, however, that we declare a dependency on baz.
     Package::new("bar", "0.0.1").local(true).publish();
 
     let p = project()
@@ -178,7 +178,7 @@ fn multiple_versions() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [UNPACKING] bar v0.1.0 (registry `[ROOT]/registry`)
 [CHECKING] bar v0.1.0
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -194,7 +194,7 @@ fn multiple_versions() {
 
     p.cargo("update")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [UPDATING] bar v0.1.0 -> v0.2.0
 
 "#]])
@@ -244,7 +244,7 @@ fn multiple_names() {
     p.cargo("check")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [UNPACKING] bar v0.0.1 (registry `[ROOT]/registry`)
 [UNPACKING] baz v0.1.0 (registry `[ROOT]/registry`)
 [CHECKING] bar v0.0.1
@@ -300,8 +300,9 @@ fn interdependent() {
         .build();
 
     p.cargo("check")
-        .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+        .with_stderr_data(
+            str![[r#"
+[LOCKING] 2 packages to highest compatible versions
 [UNPACKING] bar v0.0.1 (registry `[ROOT]/registry`)
 [UNPACKING] baz v0.1.0 (registry `[ROOT]/registry`)
 [CHECKING] bar v0.0.1
@@ -309,7 +310,9 @@ fn interdependent() {
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -370,8 +373,9 @@ fn path_dep_rewritten() {
         .build();
 
     p.cargo("check")
-        .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+        .with_stderr_data(
+            str![[r#"
+[LOCKING] 2 packages to highest compatible versions
 [UNPACKING] bar v0.0.1 (registry `[ROOT]/registry`)
 [UNPACKING] baz v0.1.0 (registry `[ROOT]/registry`)
 [CHECKING] bar v0.0.1
@@ -379,7 +383,9 @@ fn path_dep_rewritten() {
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -423,10 +429,10 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update registry `crates-io`
+  unable to update registry `crates-io`
 
 Caused by:
-  failed to update replaced source registry `crates-io`
+  failed to query replaced source registry `crates-io`
 
 Caused by:
   local registry path is not a directory: [..]path[..]to[..]nowhere
@@ -536,7 +542,7 @@ fn crates_io_registry_url_is_optional() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [UNPACKING] bar v0.0.1 (registry `[ROOT]/registry`)
 [COMPILING] bar v0.0.1
 [COMPILING] foo v0.0.1 ([ROOT]/foo)

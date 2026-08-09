@@ -1,17 +1,17 @@
 //! Tests for git authentication.
 
-use std::collections::HashSet;
-use std::io::prelude::*;
+use cargo::util::data_structures::HashSet;
 use std::io::BufReader;
+use std::io::prelude::*;
 use std::net::{SocketAddr, TcpListener};
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::thread::{self, JoinHandle};
 
+use crate::prelude::*;
 use cargo_test_support::basic_manifest;
 use cargo_test_support::git::cargo_uses_gitoxide;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::project;
 
 fn setup_failed_auth_test() -> (SocketAddr, JoinHandle<()>, Arc<AtomicUsize>) {
@@ -147,7 +147,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update http://{addr}/foo/bar
+  unable to update http://{addr}/foo/bar
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -226,7 +226,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update https://{addr}/foo/bar
+  unable to update https://{addr}/foo/bar
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -324,7 +324,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update ssh://{addr}/foo/bar
+  unable to update ssh://{addr}/foo/bar
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -372,14 +372,14 @@ fn net_err_suggests_fetch_with_cli() {
 [UPDATING] git repository `ssh://needs-proxy.invalid/git`
 [WARNING] spurious network error (3 tries remaining): [..] resolve [..] needs-proxy.invalid: [..] known[..]
 [WARNING] spurious network error (2 tries remaining): [..] resolve [..] needs-proxy.invalid: [..] known[..]
-[WARNING] spurious network error (1 tries remaining): [..] resolve [..] needs-proxy.invalid: [..] known[..]
+[WARNING] spurious network error (1 try remaining): [..] resolve [..] needs-proxy.invalid: [..] known[..]
 [ERROR] failed to get `foo` as a dependency of package `foo v0.0.0 ([ROOT]/foo)`
 
 Caused by:
   failed to load source for dependency `foo`
 
 Caused by:
-  Unable to update ssh://needs-proxy.invalid/git
+  unable to update ssh://needs-proxy.invalid/git
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/git-[HASH]
@@ -413,7 +413,7 @@ Caused by:
 
     p.cargo("check -v")
         .with_status(101)
-        .with_stderr_contains("[..]Unable to update[..]")
+        .with_stderr_contains("[..]unable to update[..]")
         .with_stderr_does_not_contain("[..]try enabling `git-fetch-with-cli`[..]")
         .run();
 }
@@ -457,7 +457,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update https://foo.bar/foo/bar
+  unable to update https://foo.bar/foo/bar
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]

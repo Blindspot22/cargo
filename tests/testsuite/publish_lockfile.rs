@@ -2,10 +2,11 @@
 
 use std::fs::File;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use crate::utils::cargo_process;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{
-    basic_manifest, cargo_process, git, paths, project, publish::validate_crate_contents, str,
+    basic_manifest, git, paths, project, publish::validate_crate_contents, str,
 };
 
 fn pl_manifest(name: &str, version: &str, extra: &str) -> String {
@@ -150,7 +151,7 @@ src/main.rs
 }
 
 #[cargo_test]
-fn no_lock_file_with_library() {
+fn lock_file_with_library() {
     let p = project()
         .file("Cargo.toml", &pl_manifest("foo", "0.0.1", ""))
         .file("src/lib.rs", "")
@@ -162,7 +163,7 @@ fn no_lock_file_with_library() {
     validate_crate_contents(
         f,
         "foo-0.0.1.crate",
-        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
+        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs", "Cargo.lock"],
         (),
     );
 }
@@ -241,7 +242,7 @@ fn note_resolve_changes() {
 [ARCHIVING] Cargo.toml.orig
 [ARCHIVING] src/main.rs
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
-[WARNING] no (git) Cargo.toml found at `[..]/foo/Cargo.toml` in workdir `[..]`
+...
 
 "#]].unordered())
         .run();
@@ -345,7 +346,9 @@ fn warn_package_with_yanked() {
         .with_stderr_data(str![[r#"
 [PACKAGING] foo v0.0.1 ([ROOT]/foo)
 [UPDATING] `dummy-registry` index
-[WARNING] package `bar v0.1.0` in Cargo.lock is yanked in registry `crates-io`, consider updating to a version that is not yanked
+[WARNING] package `bar v0.1.0` in Cargo.lock is yanked in registry `crates-io`
+  |
+  = [HELP] consider updating to a version that is not yanked
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 
 "#]])
@@ -383,7 +386,9 @@ dependencies = [
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.1.0 (registry `dummy-registry`)
 [INSTALLING] foo v0.1.0
-[WARNING] package `bar v0.1.0` in Cargo.lock is yanked in registry `crates-io`, consider running without --locked
+[WARNING] package `bar v0.1.0` in Cargo.lock is yanked in registry `crates-io`
+  |
+  = [HELP] consider running without --locked
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
 [COMPILING] bar v0.1.0
@@ -401,7 +406,7 @@ dependencies = [
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
 [INSTALLING] foo v0.1.0
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v0.1.1 (registry `dummy-registry`)
 [COMPILING] bar v0.1.1
@@ -410,6 +415,48 @@ dependencies = [
 [REPLACING] [ROOT]/home/.cargo/bin/foo[EXE]
 [REPLACED] package `foo v0.1.0` with `foo v0.1.0` (executable `foo[EXE]`)
 [WARNING] be sure to add `[ROOT]/home/.cargo/bin` to your PATH to be able to run the installed binaries
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn warn_install_with_offline_warn_cache() {
+    Package::new("bar", "0.1.0").yanked(true).publish();
+    Package::new("bar", "0.1.1").publish();
+    Package::new("foo", "0.1.0")
+        .dep("bar", "0.1")
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "Cargo.lock",
+            r#"
+[[package]]
+name = "bar"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "foo"
+version = "0.1.0"
+dependencies = [
+ "bar 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+            "#,
+        )
+        .publish();
+
+    // Warm the registry index cache.
+    cargo_process("install --locked foo").run();
+
+    // Re-install and the yanked help works with offline.
+    // (no extra index query)
+    cargo_process("install --offline --locked --force foo")
+        .with_stderr_data(str![[r#"
+...
+[WARNING] package `bar v0.1.0` in Cargo.lock is yanked in registry `crates-io`
+  |
+  = [HELP] consider running without --locked
+...
 
 "#]])
         .run();
@@ -546,13 +593,15 @@ fn use_workspace_root_lockfile() {
     // Expect: package `bar` uses `serde v0.2.0` as required by workspace `Cargo.lock`.
     p.cargo("package --workspace")
         .with_stderr_data(str![[r#"
-[WARNING] manifest has no documentation, homepage or repository.
-See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[WARNING] manifest has no documentation, homepage or repository
+  |
+  = [NOTE] see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
 [PACKAGING] bar v0.0.1 ([ROOT]/foo/bar)
 [UPDATING] `dummy-registry` index
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
-[WARNING] manifest has no documentation, homepage or repository.
-See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
+[WARNING] manifest has no documentation, homepage or repository
+  |
+  = [NOTE] see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
 [PACKAGING] foo v0.0.1 ([ROOT]/foo)
 [PACKAGED] 4 files, [FILE_SIZE]B ([FILE_SIZE]B compressed)
 [VERIFYING] bar v0.0.1 ([ROOT]/foo/bar)
@@ -562,7 +611,6 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 [COMPILING] bar v0.0.1 ([ROOT]/foo/target/package/bar-0.0.1)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [VERIFYING] foo v0.0.1 ([ROOT]/foo)
-[COMPILING] serde v0.2.0
 [COMPILING] foo v0.0.1 ([ROOT]/foo/target/package/foo-0.0.1)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 

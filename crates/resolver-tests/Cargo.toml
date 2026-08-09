@@ -12,5 +12,8 @@ cargo-util.workspace = true
 proptest.workspace = true
 varisat.workspace = true
 
+[dev-dependencies]
+snapbox.workspace = true
+
 [lints]
 workspace = true

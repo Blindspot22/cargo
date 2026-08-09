@@ -1,9 +1,9 @@
 //! Tests for targets with `required-features`.
 
+use crate::prelude::*;
 use cargo_test_support::install::{assert_has_installed_exe, assert_has_not_installed_exe};
 use cargo_test_support::is_nightly;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::str;
 
@@ -766,7 +766,7 @@ Consider enabling some of the needed features by passing, e.g., `--features="a"`
         .with_stderr_data(str![[r#"
 [INSTALLING] foo v0.0.1 ([ROOT]/foo)
 [ERROR] failed to compile `foo v0.0.1 ([ROOT]/foo)`, intermediate artifacts can be found at `[ROOT]/foo/target`.
-To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+To reuse those artifacts with a future compilation, set the environment variable `CARGO_BUILD_BUILD_DIR` to that path.
 
 Caused by:
   target `foo` in package `foo` requires the features: `a`
@@ -785,7 +785,7 @@ Caused by:
         .with_stderr_data(str![[r#"
 [INSTALLING] foo v0.0.1 ([ROOT]/foo)
 [ERROR] failed to compile `foo v0.0.1 ([ROOT]/foo)`, intermediate artifacts can be found at `[ROOT]/foo/target`.
-To reuse those artifacts with a future compilation, set the environment variable `CARGO_TARGET_DIR` to that path.
+To reuse those artifacts with a future compilation, set the environment variable `CARGO_BUILD_BUILD_DIR` to that path.
 
 Caused by:
   target `foo` in package `foo` requires the features: `a`
@@ -1153,7 +1153,7 @@ fn dep_feature_in_cmd_line() {
     // This is a no-op
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -1251,7 +1251,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 1 measured; 0 filtered out; fini
     p.cargo("install --path .")
         .with_stderr_data(str![[r#"
 [INSTALLING] foo v0.0.1 ([ROOT]/foo)
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
 [WARNING] none of the package's binaries are available for install using the selected features
   bin "foo" requires the features: `bar/a`
@@ -1511,7 +1511,7 @@ fn renamed_required_features() {
     p.cargo("run")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [ERROR] target `x` in package `foo` requires the features: `a1/f1`
 Consider enabling them by passing, e.g., `--features="a1/f1"`
 

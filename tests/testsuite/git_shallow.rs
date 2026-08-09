@@ -1,20 +1,88 @@
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_manifest, git, paths, project};
 
 use crate::git_gc::find_index;
 
+#[derive(Copy, Clone, Debug)]
+enum Backend {
+    Git2,
+    Gitoxide,
+    GitCli,
+}
+
+impl Backend {
+    fn to_arg(&self) -> &'static str {
+        match self {
+            Backend::Git2 => "",
+            Backend::Gitoxide => "-Zgitoxide=fetch",
+            Backend::GitCli => "--config=net.git-fetch-with-cli=true",
+        }
+    }
+
+    fn to_trace_log(&self) -> &str {
+        match self {
+            Backend::Git2 => r#"[..]git-fetch: backend="libgit2"[..]"#,
+            Backend::Gitoxide => r#"[..]git-fetch: backend="gitoxide"[..]"#,
+            Backend::GitCli => r#"[..]git-fetch: backend="git-cli"[..]"#,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
 enum RepoMode {
     Shallow,
     Complete,
 }
 
-#[cargo_test]
-fn gitoxide_clones_shallow_two_revs_same_deps() {
-    perform_two_revs_same_deps(true)
+impl RepoMode {
+    fn to_deps_arg(&self) -> &'static str {
+        match self {
+            RepoMode::Complete => "",
+            RepoMode::Shallow => "-Zgit=shallow-deps",
+        }
+    }
+
+    fn to_index_arg(&self) -> &'static str {
+        match self {
+            RepoMode::Complete => "",
+            RepoMode::Shallow => "-Zgit=shallow-index",
+        }
+    }
+
+    #[track_caller]
+    fn assert_index(self, repo: &gix::Repository, shallow_depth: usize, complete_depth: usize) {
+        let commit_count = repo
+            .rev_parse_single("origin/HEAD")
+            .unwrap()
+            .ancestors()
+            .all()
+            .unwrap()
+            .count();
+        match self {
+            RepoMode::Shallow => {
+                assert_eq!(commit_count, shallow_depth,);
+                assert!(repo.is_shallow());
+            }
+            RepoMode::Complete => {
+                assert_eq!(commit_count, complete_depth,);
+                assert!(!repo.is_shallow());
+            }
+        }
+    }
 }
 
-fn perform_two_revs_same_deps(shallow: bool) {
+#[cargo_test]
+fn gitoxide_fetch_shallow_dep_two_revs() {
+    fetch_dep_two_revs(Backend::Gitoxide)
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_dep_two_revs() {
+    fetch_dep_two_revs(Backend::GitCli)
+}
+
+fn fetch_dep_two_revs(backend: Backend) {
     let bar = git::new("meta-dep", |project| {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.0.0"))
@@ -92,27 +160,265 @@ fn perform_two_revs_same_deps(shallow: bool) {
         )
         .build();
 
-    let args = if shallow {
-        "build -v -Zgitoxide=fetch -Zgit=shallow-deps"
-    } else {
-        "build -v"
-    };
-    foo.cargo(args)
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+    foo.cargo("check -v")
+        .arg_line(backend.to_arg())
+        .arg_line(RepoMode::Shallow.to_deps_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0") // respect `backend`
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-deps"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
-    assert!(foo.bin("foo").is_file());
-    foo.process(&foo.bin("foo")).run();
 }
 
 #[cargo_test]
-fn two_revs_same_deps() {
-    perform_two_revs_same_deps(false)
+fn gitoxide_fetch_shallow_dep_branch_and_rev() -> anyhow::Result<()> {
+    fetch_shallow_dep_branch_and_rev(Backend::Gitoxide)
 }
 
 #[cargo_test]
-fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_with_git2_fetch(
+fn git_cli_fetch_shallow_dep_branch_and_rev() -> anyhow::Result<()> {
+    fetch_shallow_dep_branch_and_rev(Backend::GitCli)
+}
+
+fn fetch_shallow_dep_branch_and_rev(backend: Backend) -> anyhow::Result<()> {
+    let (bar, bar_repo) = git::new_repo("bar", |p| {
+        p.file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
+            .file("src/lib.rs", "")
+    });
+
+    // this commit would not be available in a shallow fetch.
+    let first_commit_pre_change = bar_repo.head().unwrap().target().unwrap();
+
+    bar.change_file("src/lib.rs", "// change");
+    git::add(&bar_repo);
+    git::commit(&bar_repo);
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+
+                    [dependencies]
+                    bar-renamed = {{ package = "bar", git = "{}", rev = "{}" }}
+                    bar = {{ git = "{}", branch = "master" }}
+                "#,
+                bar.url(),
+                first_commit_pre_change,
+                bar.url(),
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .arg_line(backend.to_arg())
+        .arg_line(RepoMode::Shallow.to_deps_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-deps"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
+        .run();
+
+    let db_paths = glob::glob(paths::home().join(".cargo/git/db/bar-*").to_str().unwrap())?
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        db_paths.len(),
+        1,
+        "only one db checkout source is used per dependency"
+    );
+    let db_clone = gix::open_opts(&db_paths[0], gix::open::Options::isolated())?;
+    assert!(
+        db_clone.is_shallow(),
+        "the repo is shallow while having all data it needs"
+    );
+
+    Ok(())
+}
+
+#[cargo_test]
+fn gitoxide_fetch_shallow_dep_branch_to_rev() -> anyhow::Result<()> {
+    fetch_shallow_dep_branch_to_rev(Backend::Gitoxide)
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_dep_branch_to_rev() -> anyhow::Result<()> {
+    fetch_shallow_dep_branch_to_rev(Backend::GitCli)
+}
+
+fn fetch_shallow_dep_branch_to_rev(backend: Backend) -> anyhow::Result<()> {
+    // db exists from previous build, then dependency changes to refer to revision that isn't
+    // available in the shallow fetch.
+
+    let (bar, bar_repo) = git::new_repo("bar", |p| {
+        p.file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
+            .file("src/lib.rs", "")
+    });
+
+    // this commit would not be available in a shallow fetch.
+    let first_commit_pre_change = bar_repo.head().unwrap().target().unwrap();
+
+    bar.change_file("src/lib.rs", "// change");
+    git::add(&bar_repo);
+    git::commit(&bar_repo);
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+
+                    [dependencies]
+                    bar = {{ git = "{}", branch = "master" }}
+                "#,
+                bar.url(),
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .arg_line(backend.to_arg())
+        .arg_line(RepoMode::Shallow.to_deps_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-deps"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
+        .run();
+
+    let db_clone = gix::open_opts(
+        find_bar_db(RepoMode::Shallow),
+        gix::open::Options::isolated(),
+    )?;
+    assert!(db_clone.is_shallow());
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.1.0"
+
+                    [dependencies]
+                    bar = {{ git = "{}", rev = "{}" }}
+                "#,
+                bar.url(),
+                first_commit_pre_change
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .arg_line(backend.to_arg())
+        .arg_line(RepoMode::Shallow.to_deps_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-deps"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
+        .run();
+
+    assert!(
+        db_clone.is_shallow(),
+        "we maintain shallowness and never unshallow"
+    );
+
+    Ok(())
+}
+
+#[cargo_test]
+fn gitoxide_fetch_shallow_index_then_git2_fetch_complete() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::Gitoxide,
+        RepoMode::Shallow,
+        Backend::Git2,
+        RepoMode::Complete,
+    )
+}
+
+#[cargo_test]
+fn gitoxide_fetch_shallow_index_then_git_cli_fetch_shallow() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::Gitoxide,
+        RepoMode::Shallow,
+        Backend::GitCli,
+        RepoMode::Shallow,
+    )
+}
+
+#[cargo_test]
+fn gitoxide_fetch_complete_index_then_git_cli_fetch_shallow() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::Gitoxide,
+        RepoMode::Complete,
+        Backend::GitCli,
+        RepoMode::Shallow,
+    )
+}
+
+#[cargo_test]
+fn gitoxide_fetch_shallow_index_then_git_cli_fetch_complete() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::Gitoxide,
+        RepoMode::Shallow,
+        Backend::GitCli,
+        RepoMode::Complete,
+    )
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_index_then_git2_fetch_complete() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::GitCli,
+        RepoMode::Shallow,
+        Backend::Git2,
+        RepoMode::Complete,
+    )
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_index_then_gitoxide_fetch_shallow() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::GitCli,
+        RepoMode::Shallow,
+        Backend::Gitoxide,
+        RepoMode::Shallow,
+    )
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_complete_then_gitoxide_fetch_complete() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::GitCli,
+        RepoMode::Complete,
+        Backend::Gitoxide,
+        RepoMode::Shallow,
+    )
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_index_then_gitoxide_fetch_complete() -> anyhow::Result<()> {
+    fetch_index_then_fetch(
+        Backend::GitCli,
+        RepoMode::Shallow,
+        Backend::Gitoxide,
+        RepoMode::Complete,
+    )
+}
+
+fn fetch_index_then_fetch(
+    backend_1st: Backend,
+    mode_1st: RepoMode,
+    backend_2nd: Backend,
+    mode_2nd: RepoMode,
 ) -> anyhow::Result<()> {
     Package::new("bar", "1.0.0").publish();
     let p = project()
@@ -130,48 +436,68 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_with_git2_fetch(
         .file("src/lib.rs", "")
         .build();
     p.cargo("fetch")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend_1st.to_arg())
+        .arg_line(mode_1st.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend_1st.to_trace_log())
         .run();
 
-    let shallow_repo = gix::open_opts(find_index(), gix::open::Options::isolated())?;
-    assert_eq!(
-        shallow_repo
-            .rev_parse_single("origin/HEAD")?
-            .ancestors()
-            .all()?
-            .count(),
-        1,
-        "shallow clones always start at depth of 1 to minimize download size"
-    );
-    assert!(shallow_repo.is_shallow());
+    let repo = gix::open_opts(find_remote_index(mode_1st), gix::open::Options::isolated())?;
+    let complete_depth = 2; // initial commit, bar@1.0.0
+    mode_1st.assert_index(&repo, 1, complete_depth);
 
     Package::new("bar", "1.1.0").publish();
     p.cargo("update")
+        .arg_line(backend_2nd.to_arg())
+        .arg_line(mode_2nd.to_index_arg())
         .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend_2nd.to_trace_log())
         .run();
 
-    let repo = gix::open_opts(
-        find_remote_index(RepoMode::Complete),
-        gix::open::Options::isolated(),
-    )?;
-    assert_eq!(
-        repo.rev_parse_single("origin/HEAD")?
-            .ancestors()
-            .all()?
-            .count(),
-        3,
-        "an entirely new repo was cloned which is never shallow"
-    );
-    assert!(!repo.is_shallow());
+    let repo = gix::open_opts(find_remote_index(mode_2nd), gix::open::Options::isolated())?;
+    let complete_depth = 3; // initial commit, bar@1.0.0, and bar@1.1.0
+    mode_2nd.assert_index(&repo, 1, complete_depth);
+
     Ok(())
 }
 
 #[cargo_test]
-fn gitoxide_clones_git_dependency_with_shallow_protocol_and_git2_is_used_for_followup_fetches(
+fn gitoxide_fetch_shallow_dep_then_git2_fetch_complete() -> anyhow::Result<()> {
+    fetch_shallow_dep_then_fetch_complete(Backend::Gitoxide, Backend::Git2)
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_dep_then_git2_fetch_complete() -> anyhow::Result<()> {
+    fetch_shallow_dep_then_fetch_complete(Backend::GitCli, Backend::Git2)
+}
+
+#[cargo_test]
+fn gitoxide_fetch_shallow_dep_then_gitoxide_fetch_complete() -> anyhow::Result<()> {
+    fetch_shallow_dep_then_fetch_complete(Backend::Gitoxide, Backend::Gitoxide)
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_dep_then_gitoxide_fetch_complete() -> anyhow::Result<()> {
+    fetch_shallow_dep_then_fetch_complete(Backend::GitCli, Backend::Gitoxide)
+}
+
+#[cargo_test]
+fn gitoxide_fetch_shallow_dep_then_git_cli_fetch_complete() -> anyhow::Result<()> {
+    fetch_shallow_dep_then_fetch_complete(Backend::Gitoxide, Backend::GitCli)
+}
+
+#[cargo_test]
+fn git_cli_fetch_shallow_dep_then_git_cli_fetch_complete() -> anyhow::Result<()> {
+    fetch_shallow_dep_then_fetch_complete(Backend::GitCli, Backend::GitCli)
+}
+
+fn fetch_shallow_dep_then_fetch_complete(
+    backend_1st: Backend,
+    backend_2nd: Backend,
 ) -> anyhow::Result<()> {
     // Example where an old lockfile with an explicit branch="master" in Cargo.toml.
     Package::new("bar", "1.0.0").publish();
@@ -213,11 +539,12 @@ fn gitoxide_clones_git_dependency_with_shallow_protocol_and_git2_is_used_for_fol
         .build();
 
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-deps")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend_1st.to_arg())
+        .arg_line(RepoMode::Shallow.to_deps_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-deps"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend_1st.to_trace_log())
         .run();
 
     let db_clone = gix::open_opts(
@@ -232,7 +559,7 @@ fn gitoxide_clones_git_dependency_with_shallow_protocol_and_git2_is_used_for_fol
             .all()?
             .count(),
         1,
-        "db clones are shallow and have a shortened history"
+        "db fetch are shallow and have a shortened history"
     );
 
     let dep_checkout = gix::open_opts(
@@ -243,7 +570,7 @@ fn gitoxide_clones_git_dependency_with_shallow_protocol_and_git2_is_used_for_fol
     assert_eq!(
         dep_checkout.head_id()?.ancestors().all()?.count(),
         1,
-        "db checkouts are hard-linked clones with the shallow file copied separately."
+        "db checkouts are hard-linked fetches with the shallow file copied separately."
     );
 
     bar.change_file("src/lib.rs", "// another change");
@@ -260,7 +587,11 @@ fn gitoxide_clones_git_dependency_with_shallow_protocol_and_git2_is_used_for_fol
     }
 
     p.cargo("update")
+        .arg_line(backend_2nd.to_arg())
         .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend_2nd.to_trace_log())
         .run();
 
     let db_clone = gix::open_opts(
@@ -311,149 +642,16 @@ fn gitoxide_clones_git_dependency_with_shallow_protocol_and_git2_is_used_for_fol
 }
 
 #[cargo_test]
-fn gitoxide_shallow_clone_followed_by_non_shallow_update() -> anyhow::Result<()> {
-    Package::new("bar", "1.0.0").publish();
-    let (bar, bar_repo) = git::new_repo("bar", |p| {
-        p.file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
-            .file("src/lib.rs", "")
-    });
-
-    bar.change_file("src/lib.rs", "// change");
-    git::add(&bar_repo);
-    git::commit(&bar_repo);
-
-    {
-        let mut walk = bar_repo.revwalk()?;
-        walk.push_head()?;
-        assert_eq!(
-            walk.count(),
-            2,
-            "original repo has initial commit and change commit"
-        );
-    }
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            &format!(
-                r#"
-                    [package]
-                    name = "foo"
-                    version = "0.1.0"
-
-                    [dependencies]
-                    bar = {{ version = "1.0", git = "{}", branch = "master" }}
-                "#,
-                bar.url()
-            ),
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-deps")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
-        .run();
-
-    let shallow_db_clone = gix::open_opts(
-        find_bar_db(RepoMode::Shallow),
-        gix::open::Options::isolated(),
-    )?;
-    assert!(shallow_db_clone.is_shallow());
-    assert_eq!(
-        shallow_db_clone
-            .rev_parse_single("origin/master")?
-            .ancestors()
-            .all()?
-            .count(),
-        1,
-        "db clones are shallow and have a shortened history"
-    );
-
-    let dep_checkout = gix::open_opts(
-        find_lexicographically_first_bar_checkout(),
-        gix::open::Options::isolated(),
-    )?;
-    assert!(dep_checkout.is_shallow());
-    assert_eq!(
-        dep_checkout.head_id()?.ancestors().all()?.count(),
-        1,
-        "db checkouts are hard-linked clones with the shallow file copied separately."
-    );
-
-    bar.change_file("src/lib.rs", "// another change");
-    git::add(&bar_repo);
-    git::commit(&bar_repo);
-    {
-        let mut walk = bar_repo.revwalk()?;
-        walk.push_head()?;
-        assert_eq!(
-            walk.count(),
-            3,
-            "original repo has initial commit and change commit, and another change"
-        );
-    }
-
-    p.cargo("update")
-        .arg("-Zgitoxide=fetch") // shallow-deps is omitted intentionally
-        .masquerade_as_nightly_cargo(&["unstable features must be available for -Z gitoxide"])
-        .run();
-
-    let db_clone = gix::open_opts(
-        find_bar_db(RepoMode::Complete),
-        gix::open::Options::isolated(),
-    )?;
-    assert_eq!(
-        db_clone
-            .rev_parse_single("origin/master")?
-            .ancestors()
-            .all()?
-            .count(),
-        3,
-        "we created an entirely new non-shallow clone"
-    );
-    assert!(!db_clone.is_shallow());
-    assert_eq!(
-        dep_checkout.head_id()?.ancestors().all()?.count(),
-        1,
-        "the original dep checkout didn't change - there is a new one for each update we get locally"
-    );
-
-    let max_history_depth = glob::glob(
-        paths::home()
-            .join(".cargo/git/checkouts/bar-*/*/.git")
-            .to_str()
-            .unwrap(),
-    )?
-    .map(|path| -> anyhow::Result<usize> {
-        let path = path?;
-        let dep_checkout = gix::open_opts(&path, gix::open::Options::isolated())?;
-        assert_eq!(
-            dep_checkout.is_shallow(),
-            path.to_string_lossy().contains("-shallow"),
-            "checkouts of shallow db repos are shallow as well"
-        );
-        let depth = dep_checkout.head_id()?.ancestors().all()?.count();
-        Ok(depth)
-    })
-    .map(Result::unwrap)
-    .max()
-    .expect("two checkout repos");
-
-    assert_eq!(
-        max_history_depth, 3,
-        "we see the previous shallow checkout as well as new unshallow one"
-    );
-
-    Ok(())
+fn gitoxide_fetch_shallow_index_then_preserve_shallow() -> anyhow::Result<()> {
+    fetch_shallow_index_then_preserve_shallow(Backend::Gitoxide)
 }
 
 #[cargo_test]
-fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_fetch_maintains_shallowness(
-) -> anyhow::Result<()> {
+fn git_cli_fetch_shallow_index_then_preserve_shallow() -> anyhow::Result<()> {
+    fetch_shallow_index_then_preserve_shallow(Backend::GitCli)
+}
+
+fn fetch_shallow_index_then_preserve_shallow(backend: Backend) -> anyhow::Result<()> {
     Package::new("bar", "1.0.0").publish();
     let p = project()
         .file(
@@ -470,11 +668,12 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_fetch_maintains_
         .file("src/lib.rs", "")
         .build();
     p.cargo("fetch")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     let repo = gix::open_opts(find_index(), gix::open::Options::isolated())?;
@@ -484,17 +683,18 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_fetch_maintains_
             .all()?
             .count(),
         1,
-        "shallow clones always start at depth of 1 to minimize download size"
+        "shallow fetches always start at depth of 1 to minimize download size"
     );
     assert!(repo.is_shallow());
 
     Package::new("bar", "1.1.0").publish();
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index") // NOTE: the flag needs to be consistent or else a different index is created
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg()) // NOTE: the flag needs to be consistent or else a different index is created
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     assert_eq!(
@@ -510,11 +710,12 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_fetch_maintains_
     Package::new("bar", "1.2.0").publish();
     Package::new("bar", "1.3.0").publish();
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     assert_eq!(
@@ -530,10 +731,18 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_follow_up_fetch_maintains_
     Ok(())
 }
 
-/// If there is shallow *and* non-shallow clones, non-shallow will naturally be returned due to sort order.
+/// If there is shallow *and* non-shallow fetches, non-shallow will naturally be returned due to sort order.
 #[cargo_test]
-fn gitoxide_clones_registry_without_shallow_protocol_and_follow_up_fetch_uses_shallowness(
-) -> anyhow::Result<()> {
+fn gitoxide_fetch_complete_index_then_shallow() -> anyhow::Result<()> {
+    fetch_complete_index_then_shallow(Backend::Gitoxide)
+}
+
+#[cargo_test]
+fn git_cli_fetch_complete_index_then_shallow() -> anyhow::Result<()> {
+    fetch_complete_index_then_shallow(Backend::GitCli)
+}
+
+fn fetch_complete_index_then_shallow(backend: Backend) -> anyhow::Result<()> {
     Package::new("bar", "1.0.0").publish();
     let p = project()
         .file(
@@ -550,8 +759,11 @@ fn gitoxide_clones_registry_without_shallow_protocol_and_follow_up_fetch_uses_sh
         .file("src/lib.rs", "")
         .build();
     p.cargo("fetch")
-        .arg("-Zgitoxide=fetch")
-        .masquerade_as_nightly_cargo(&["unstable features must be available for -Z gitoxide"])
+        .arg_line(backend.to_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     let repo = gix::open_opts(find_index(), gix::open::Options::isolated())?;
@@ -567,11 +779,12 @@ fn gitoxide_clones_registry_without_shallow_protocol_and_follow_up_fetch_uses_sh
 
     Package::new("bar", "1.1.0").publish();
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     let shallow_repo = gix::open_opts(
@@ -579,23 +792,25 @@ fn gitoxide_clones_registry_without_shallow_protocol_and_follow_up_fetch_uses_sh
         gix::open::Options::isolated(),
     )?;
     assert_eq!(
-        shallow_repo.rev_parse_single("origin/HEAD")?
+        shallow_repo
+            .rev_parse_single("origin/HEAD")?
             .ancestors()
             .all()?
             .count(),
         1,
-        "the follow up clones an entirely new index which is now shallow and which is in its own location"
+        "the follow up fetch an entirely new index which is now shallow and which is in its own location"
     );
     assert!(shallow_repo.is_shallow());
 
     Package::new("bar", "1.2.0").publish();
     Package::new("bar", "1.3.0").publish();
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     assert_eq!(
@@ -610,8 +825,11 @@ fn gitoxide_clones_registry_without_shallow_protocol_and_follow_up_fetch_uses_sh
     assert!(shallow_repo.is_shallow());
 
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .masquerade_as_nightly_cargo(&["unstable features must be available for -Z gitoxide"])
+        .arg_line(backend.to_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     assert_eq!(
@@ -627,151 +845,30 @@ fn gitoxide_clones_registry_without_shallow_protocol_and_follow_up_fetch_uses_sh
 }
 
 #[cargo_test]
-fn gitoxide_git_dependencies_switch_from_branch_to_rev() -> anyhow::Result<()> {
-    // db exists from previous build, then dependency changes to refer to revision that isn't
-    // available in the shallow clone.
-
-    let (bar, bar_repo) = git::new_repo("bar", |p| {
-        p.file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
-            .file("src/lib.rs", "")
-    });
-
-    // this commit would not be available in a shallow clone.
-    let first_commit_pre_change = bar_repo.head().unwrap().target().unwrap();
-
-    bar.change_file("src/lib.rs", "// change");
-    git::add(&bar_repo);
-    git::commit(&bar_repo);
-    let p = project()
-        .file(
-            "Cargo.toml",
-            &format!(
-                r#"
-                    [package]
-                    name = "foo"
-                    version = "0.1.0"
-
-                    [dependencies]
-                    bar = {{ git = "{}", branch = "master" }}
-                "#,
-                bar.url(),
-            ),
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("check")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-deps")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
-        .run();
-
-    let db_clone = gix::open_opts(
-        find_bar_db(RepoMode::Shallow),
-        gix::open::Options::isolated(),
-    )?;
-    assert!(db_clone.is_shallow());
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            &format!(
-                r#"
-                    [package]
-                    name = "foo"
-                    version = "0.1.0"
-
-                    [dependencies]
-                    bar = {{ git = "{}", rev = "{}" }}
-                "#,
-                bar.url(),
-                first_commit_pre_change
-            ),
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("check")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-deps")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
-        .run();
-
-    assert!(
-        db_clone.is_shallow(),
-        "we maintain shallowness and never unshallow"
-    );
-
-    Ok(())
+fn gitoxide_fetch_shallow_index_then_abort_and_update() -> anyhow::Result<()> {
+    fetch_shallow_index_then_abort_and_update(Backend::Gitoxide)
 }
 
+// Git CLI cannot recover from stale lock files like Gitoxide can.
+// This test simulates an aborted fetch by creating a stale shallow.lock file.
+// Gitoxide can detect and recover from this, but Git CLI will fail with:
+//
+// ```text
+// fatal: Unable to create \'/path/to/.git/shallow.lock\': File exists.
+//
+// Another git process seems to be running in this repository, e.g.
+// an editor opened by \'git commit\'. Please make sure all processes
+// are terminated then try again. If it still fails, a git process
+// may have crashed in this repository earlier:
+// remove the file manually to continue.
+// ```
 #[cargo_test]
-fn shallow_deps_work_with_revisions_and_branches_mixed_on_same_dependency() -> anyhow::Result<()> {
-    let (bar, bar_repo) = git::new_repo("bar", |p| {
-        p.file("Cargo.toml", &basic_manifest("bar", "1.0.0"))
-            .file("src/lib.rs", "")
-    });
-
-    // this commit would not be available in a shallow clone.
-    let first_commit_pre_change = bar_repo.head().unwrap().target().unwrap();
-
-    bar.change_file("src/lib.rs", "// change");
-    git::add(&bar_repo);
-    git::commit(&bar_repo);
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            &format!(
-                r#"
-                    [package]
-                    name = "foo"
-                    version = "0.1.0"
-
-                    [dependencies]
-                    bar-renamed = {{ package = "bar", git = "{}", rev = "{}" }}
-                    bar = {{ git = "{}", branch = "master" }}
-                "#,
-                bar.url(),
-                first_commit_pre_change,
-                bar.url(),
-            ),
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("check")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-deps")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
-        .run();
-
-    let db_paths = glob::glob(paths::home().join(".cargo/git/db/bar-*").to_str().unwrap())?
-        .map(Result::unwrap)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        db_paths.len(),
-        1,
-        "only one db checkout source is used per dependency"
-    );
-    let db_clone = gix::open_opts(&db_paths[0], gix::open::Options::isolated())?;
-    assert!(
-        db_clone.is_shallow(),
-        "the repo is shallow while having all data it needs"
-    );
-
-    Ok(())
+#[ignore = "Git CLI cannot recover from stale lock files"]
+fn git_cli_fetch_shallow_index_then_abort_and_update() -> anyhow::Result<()> {
+    fetch_shallow_index_then_abort_and_update(Backend::GitCli)
 }
 
-#[cargo_test]
-fn gitoxide_clones_registry_with_shallow_protocol_and_aborts_and_updates_again(
-) -> anyhow::Result<()> {
+fn fetch_shallow_index_then_abort_and_update(backend: Backend) -> anyhow::Result<()> {
     Package::new("bar", "1.0.0").publish();
     let p = project()
         .file(
@@ -788,11 +885,12 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_aborts_and_updates_again(
         .file("src/lib.rs", "")
         .build();
     p.cargo("fetch")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     let repo = gix::open_opts(find_index(), gix::open::Options::isolated())?;
@@ -802,22 +900,23 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_aborts_and_updates_again(
             .all()?
             .count(),
         1,
-        "shallow clones always start at depth of 1 to minimize download size"
+        "shallow fetches always start at depth of 1 to minimize download size"
     );
     assert!(repo.is_shallow());
     let shallow_lock = repo.shallow_file().with_extension("lock");
-    // adding a lock file and deleting the original simulates a left-over clone that was aborted, leaving a lock file
+    // adding a lock file and deleting the original simulates a left-over fetch that was aborted, leaving a lock file
     // in place without ever having moved it to the right location.
     std::fs::write(&shallow_lock, &[])?;
     std::fs::remove_file(repo.shallow_file())?;
 
     Package::new("bar", "1.1.0").publish();
     p.cargo("update")
-        .arg("-Zgitoxide=fetch")
-        .arg("-Zgit=shallow-index")
-        .masquerade_as_nightly_cargo(&[
-            "unstable features must be available for -Z gitoxide and -Z git",
-        ])
+        .arg_line(backend.to_arg())
+        .arg(RepoMode::Shallow.to_index_arg())
+        .env("__CARGO_USE_GITOXIDE_INSTEAD_OF_GIT2", "0")
+        .masquerade_as_nightly_cargo(&["gitoxide=fetch", "git=shallow-index"])
+        .env("CARGO_LOG", "git-fetch=debug")
+        .with_stderr_contains(backend.to_trace_log())
         .run();
 
     assert!(!shallow_lock.is_file(), "the repository was re-initialized");
@@ -828,7 +927,7 @@ fn gitoxide_clones_registry_with_shallow_protocol_and_aborts_and_updates_again(
             .all()?
             .count(),
         1,
-        "it's a fresh shallow clone - otherwise it would have 2 commits if the previous shallow clone would still be present"
+        "it's a fresh shallow fetch - otherwise it would have 2 commits if the previous shallow fetch would still be present"
     );
 
     Ok(())

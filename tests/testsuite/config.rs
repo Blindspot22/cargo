@@ -1,25 +1,27 @@
 //! Tests for config settings.
 
+use cargo::util::data_structures::HashMap;
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::os;
 use std::path::{Path, PathBuf};
 
-use cargo::core::features::{GitFeatures, GitoxideFeatures};
-use cargo::core::{PackageIdSpec, Shell};
-use cargo::util::context::{
-    self, Definition, GlobalContext, JobsConfig, SslVersionConfig, StringList,
-};
+use crate::prelude::*;
 use cargo::CargoResult;
+use cargo::context::RegistryConfig;
+use cargo::context::Value;
+use cargo::context::{self, Definition, GlobalContext, JobsConfig, SslVersionConfig, StringList};
+use cargo::workspace::PackageIdSpec;
+use cargo::workspace::features::{GitFeatures, GitoxideFeatures};
 use cargo_test_support::compare::assert_e2e;
-use cargo_test_support::prelude::*;
 use cargo_test_support::str;
 use cargo_test_support::{paths, project, project_in_home, symlink_supported, t};
 use cargo_util_schemas::manifest::TomlTrimPaths;
 use cargo_util_schemas::manifest::TomlTrimPathsValue;
 use cargo_util_schemas::manifest::{self as cargo_toml, TomlDebugInfo, VecStringOrBool as VSOB};
+use cargo_util_terminal::Shell;
 use serde::Deserialize;
 
 /// Helper for constructing a `GlobalContext` object.
@@ -35,7 +37,7 @@ pub struct GlobalContextBuilder {
 impl GlobalContextBuilder {
     pub fn new() -> GlobalContextBuilder {
         GlobalContextBuilder {
-            env: HashMap::new(),
+            env: HashMap::default(),
             unstable: Vec::new(),
             config_args: Vec::new(),
             root: None,
@@ -293,7 +295,8 @@ f1 = 1
     let output = read_output(gctx);
     let expected = str![[r#"
 [WARNING] `[ROOT]/.cargo/config` is deprecated in favor of `config.toml`
-[NOTE] if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+  |
+  = [HELP] if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
 
 "#]];
     assert_e2e().eq(&output, expected);
@@ -313,7 +316,8 @@ f1 = 1
     p.cargo("-vV")
         .with_stderr_data(str![[r#"
 [WARNING] `[ROOT]/home/.cargo/config` is deprecated in favor of `config.toml`
-[NOTE] if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
+  |
+  = [HELP] if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`
 
 "#]])
         .run();
@@ -502,16 +506,18 @@ lto = false
     // TODO: don't use actual `tomlprofile`.
     let p: cargo_toml::TomlProfile = gctx.get("profile.dev").unwrap();
     let mut packages = BTreeMap::new();
-    let key =
-        cargo_toml::ProfilePackageSpec::Spec(::cargo::core::PackageIdSpec::parse("bar").unwrap());
+    let key = cargo_toml::ProfilePackageSpec::Spec(
+        ::cargo::workspace::PackageIdSpec::parse("bar").unwrap(),
+    );
     let o_profile = cargo_toml::TomlProfile {
         opt_level: Some(cargo_toml::TomlOptLevel("2".to_string())),
         codegen_units: Some(9),
         ..Default::default()
     };
     packages.insert(key, o_profile);
-    let key =
-        cargo_toml::ProfilePackageSpec::Spec(::cargo::core::PackageIdSpec::parse("env").unwrap());
+    let key = cargo_toml::ProfilePackageSpec::Spec(
+        ::cargo::workspace::PackageIdSpec::parse("env").unwrap(),
+    );
     let o_profile = cargo_toml::TomlProfile {
         codegen_units: Some(13),
         ..Default::default()
@@ -616,11 +622,12 @@ c = ['c']
     let gctx = GlobalContextBuilder::new().env("CARGO_A", "x y").build();
     assert_error(
         gctx.get::<VSOB>("a").unwrap_err(),
-        "\
+        str![[r#"
 error in environment variable `CARGO_A`: could not load config key `a`
 
 Caused by:
-  invalid type: string \"x y\", expected a boolean or vector of strings",
+  invalid type: string "x y", expected a boolean or vector of strings
+"#]],
     );
 
     // Normal env.
@@ -646,12 +653,12 @@ Caused by:
         .build_err();
     assert_error(
         gctx.unwrap_err(),
-        "\
-failed to merge --config key `a` into `[..]/.cargo/config.toml`
+        str![[r#"
+failed to merge key `a` between [ROOT]/.cargo/config.toml and --config cli option
 
 Caused by:
-  failed to merge config value from `--config cli option` into `[..]/.cargo/config.toml`: \
-expected boolean, but found array",
+  failed to merge config value from `--config cli option` into `[ROOT]/.cargo/config.toml`: expected boolean, but found array
+"#]],
     );
 
     // config-cli and advanced-env
@@ -696,11 +703,12 @@ opt-level = 'foo'
     assert_error(
         gctx.get::<cargo_toml::TomlProfile>("profile.dev")
             .unwrap_err(),
-        "\
-error in [..]/.cargo/config.toml: could not load config key `profile.dev.opt-level`
+        str![[r#"
+error in [ROOT]/.cargo/config.toml: could not load config key `profile.dev.opt-level`
 
 Caused by:
-  must be `0`, `1`, `2`, `3`, `s` or `z`, but found the string: \"foo\"",
+  must be `0`, `1`, `2`, `3`, `s` or `z`, but found the string: "foo"
+"#]],
     );
 
     let gctx = GlobalContextBuilder::new()
@@ -708,12 +716,14 @@ Caused by:
         .build();
 
     assert_error(
-        gctx.get::<cargo_toml::TomlProfile>("profile.dev").unwrap_err(),
-        "\
+        gctx.get::<cargo_toml::TomlProfile>("profile.dev")
+            .unwrap_err(),
+        str![[r#"
 error in environment variable `CARGO_PROFILE_DEV_OPT_LEVEL`: could not load config key `profile.dev.opt-level`
 
 Caused by:
-  must be `0`, `1`, `2`, `3`, `s` or `z`, but found the string: \"asdf\"",
+  must be `0`, `1`, `2`, `3`, `s` or `z`, but found the string: "asdf"
+"#]],
     );
 }
 
@@ -740,12 +750,12 @@ asdf = 3
     type Nested = HashMap<String, HashMap<String, u8>>;
 
     let n: Nested = gctx.get("nest").unwrap();
-    let mut expected = HashMap::new();
-    let mut foo = HashMap::new();
+    let mut expected = HashMap::default();
+    let mut foo = HashMap::default();
     foo.insert("f1".to_string(), 1);
     foo.insert("f2".to_string(), 3);
     expected.insert("foo".to_string(), foo);
-    let mut bar = HashMap::new();
+    let mut bar = HashMap::default();
     bar.insert("asdf".to_string(), 3);
     expected.insert("bar".to_string(), bar);
     assert_eq!(n, expected);
@@ -771,37 +781,39 @@ big = 123456789
         .build();
     assert_error(
         gctx.get::<i64>("foo").unwrap_err(),
-        "missing config key `foo`",
+        str!["missing config key `foo`"],
     );
     assert_error(
         gctx.get::<i64>("foo.bar").unwrap_err(),
-        "missing config key `foo.bar`",
+        str!["missing config key `foo.bar`"],
     );
     assert_error(
         gctx.get::<i64>("S.f2").unwrap_err(),
-        "error in [..]/.cargo/config.toml: `S.f2` expected an integer, but found a string",
+        str!["error in [ROOT]/.cargo/config.toml: `S.f2` expected an integer, but found a string"],
     );
     assert_error(
         gctx.get::<u8>("S.big").unwrap_err(),
-        "\
-error in [..].cargo/config.toml: could not load config key `S.big`
+        str![[r#"
+error in [ROOT]/.cargo/config.toml: could not load config key `S.big`
 
 Caused by:
-  invalid value: integer `123456789`, expected u8",
+  invalid value: integer `123456789`, expected u8
+"#]],
     );
 
     // Environment variable type errors.
     assert_error(
         gctx.get::<i64>("e.s").unwrap_err(),
-        "error in environment variable `CARGO_E_S`: invalid digit found in string",
+        str!["error in environment variable `CARGO_E_S`: invalid digit found in string"],
     );
     assert_error(
         gctx.get::<i8>("e.big").unwrap_err(),
-        "\
+        str![[r#"
 error in environment variable `CARGO_E_BIG`: could not load config key `e.big`
 
 Caused by:
-  invalid value: integer `123456789`, expected i8",
+  invalid value: integer `123456789`, expected i8
+"#]],
     );
 
     #[derive(Debug, Deserialize)]
@@ -812,7 +824,7 @@ Caused by:
         f3: i64,
         big: i64,
     }
-    assert_error(gctx.get::<S>("S").unwrap_err(), "missing field `f3`");
+    assert_error(gctx.get::<S>("S").unwrap_err(), str!["missing field `f3`"]);
 }
 
 #[cargo_test]
@@ -841,19 +853,20 @@ fn config_bad_toml() {
     let gctx = new_gctx();
     assert_error(
         gctx.get::<i32>("foo").unwrap_err(),
-        "\
+        str![[r#"
 could not load Cargo configuration
 
 Caused by:
-  could not parse TOML configuration in `[..]/.cargo/config.toml`
+  could not parse TOML configuration in `[ROOT]/.cargo/config.toml`
 
 Caused by:
   TOML parse error at line 1, column 5
   |
 1 | asdf
   |     ^
-expected `.`, `=`
-",
+key with no value, expected `=`
+
+"#]],
     );
 }
 
@@ -898,9 +911,10 @@ l = ['y']
     assert_eq!(gctx.get::<L>("l2").unwrap(), vec!["one", "two"]);
     assert_error(
         gctx.get::<L>("l3").unwrap_err(),
-        "\
+        str![[r#"
 invalid configuration for key `l3`
-expected a list, but found a integer for `l3` in [..]/.cargo/config.toml",
+expected a list, but found a integer for `l3` in [ROOT]/.cargo/config.toml
+"#]],
     );
     assert_eq!(
         gctx.get::<L>("l4").unwrap(),
@@ -912,21 +926,20 @@ expected a list, but found a integer for `l3` in [..]/.cargo/config.toml",
     assert_eq!(gctx.get::<L>("env-num").unwrap(), vec!["1".to_string()]);
     assert_error(
         gctx.get::<L>("env-num-list").unwrap_err(),
-        "error in environment variable `CARGO_ENV_NUM_LIST`: \
-         expected string, found integer",
+        str!["error in environment variable `CARGO_ENV_NUM_LIST`: expected string, found integer"],
     );
     assert_eq!(gctx.get::<L>("env-text").unwrap(), vec!["asdf".to_string()]);
     // "invalid number" here isn't the best error, but I think it's just toml.rs.
     assert_error(
         gctx.get::<L>("bad-env").unwrap_err(),
-        "\
+        str![[r#"
 error in environment variable `CARGO_BAD_ENV`: could not parse TOML list: TOML parse error at line 1, column 2
   |
 1 | [zzz]
-  |  ^
-invalid array
-expected `]`
-",
+  |  ^^^
+string values must be quoted, expected literal string
+
+"#]],
     );
 
     // Try some other sequence-like types.
@@ -997,7 +1010,7 @@ ns2 = 456
     assert_eq!(gctx.get::<NewS>("nse").unwrap(), NewS(987));
     assert_error(
         gctx.get::<NewS>("unset").unwrap_err(),
-        "missing config key `unset`",
+        str!["missing config key `unset`"],
     );
 }
 
@@ -1085,35 +1098,39 @@ i64max = 9223372036854775807
 
     assert_error(
         gctx.get::<u32>("nneg").unwrap_err(),
-        "\
-error in [..].cargo/config.toml: could not load config key `nneg`
+        str![[r#"
+error in [ROOT]/.cargo/config.toml: could not load config key `nneg`
 
 Caused by:
-  invalid value: integer `-123456789`, expected u32",
+  invalid value: integer `-123456789`, expected u32
+"#]],
     );
     assert_error(
         gctx.get::<u32>("eneg").unwrap_err(),
-        "\
+        str![[r#"
 error in environment variable `CARGO_ENEG`: could not load config key `eneg`
 
 Caused by:
-  invalid value: integer `-1`, expected u32",
+  invalid value: integer `-1`, expected u32
+"#]],
     );
     assert_error(
         gctx.get::<i8>("npos").unwrap_err(),
-        "\
-error in [..].cargo/config.toml: could not load config key `npos`
+        str![[r#"
+error in [ROOT]/.cargo/config.toml: could not load config key `npos`
 
 Caused by:
-  invalid value: integer `123456789`, expected i8",
+  invalid value: integer `123456789`, expected i8
+"#]],
     );
     assert_error(
         gctx.get::<i8>("epos").unwrap_err(),
-        "\
+        str![[r#"
 error in environment variable `CARGO_EPOS`: could not load config key `epos`
 
 Caused by:
-  invalid value: integer `123456789`, expected i8",
+  invalid value: integer `123456789`, expected i8
+"#]],
     );
 }
 
@@ -1128,10 +1145,11 @@ hello = 'world'
 
     let gctx = new_gctx();
 
-    assert!(gctx
-        .get::<Option<SslVersionConfig>>("http.ssl-version")
-        .unwrap()
-        .is_none());
+    assert!(
+        gctx.get::<Option<SslVersionConfig>>("http.ssl-version")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[cargo_test]
@@ -1197,19 +1215,20 @@ ssl-version.max = 'tlsv1.3'
     assert_error(
         gctx.get::<SslVersionConfig>("http.ssl-version")
             .unwrap_err(),
-        "\
+        str![[r#"
 could not load Cargo configuration
 
 Caused by:
-  could not parse TOML configuration in `[..]/.cargo/config.toml`
+  could not parse TOML configuration in `[ROOT]/.cargo/config.toml`
 
 Caused by:
   TOML parse error at line 3, column 1
   |
 3 | ssl-version.min = 'tlsv1.2'
-  | ^
-dotted key `ssl-version` attempted to extend non-table type (string)
-",
+  | ^^^^^^^^^^^
+cannot extend value of type string with a dotted key
+
+"#]],
     );
 }
 
@@ -1317,42 +1336,21 @@ fn table_merge_failure() {
     let gctx = GlobalContextBuilder::new().cwd("foo").build();
     assert_error(
         gctx.get::<Table>("table").unwrap_err(),
-        "\
+        str![[r#"
 could not load Cargo configuration
 
 Caused by:
-  failed to merge configuration at `[..]/.cargo/config.toml`
+  failed to merge configuration at `[ROOT]/.cargo/config.toml`
 
 Caused by:
-  failed to merge key `table` between [..]/foo/.cargo/config.toml and [..]/.cargo/config.toml
+  failed to merge key `table` between [ROOT]/foo/.cargo/config.toml and [ROOT]/.cargo/config.toml
 
 Caused by:
-  failed to merge key `key` between [..]/foo/.cargo/config.toml and [..]/.cargo/config.toml
+  failed to merge key `key` between [ROOT]/foo/.cargo/config.toml and [ROOT]/.cargo/config.toml
 
 Caused by:
-  failed to merge config value from `[..]/.cargo/config.toml` into `[..]/foo/.cargo/config.toml`: \
-  expected array, but found string",
-    );
-}
-
-#[cargo_test]
-fn non_string_in_array() {
-    // Currently only strings are supported.
-    write_config_toml("foo = [1, 2, 3]");
-    let gctx = new_gctx();
-    assert_error(
-        gctx.get::<Vec<i32>>("foo").unwrap_err(),
-        "\
-could not load Cargo configuration
-
-Caused by:
-  failed to load TOML configuration from `[..]/.cargo/config.toml`
-
-Caused by:
-  failed to parse key `foo`
-
-Caused by:
-  expected string but found integer in list",
+  failed to merge config value from `[ROOT]/.cargo/config.toml` into `[ROOT]/foo/.cargo/config.toml`: expected array, but found string
+"#]],
     );
 }
 
@@ -1563,9 +1561,10 @@ fn string_list_wrong_type() {
     let gctx = GlobalContextBuilder::new().build();
     assert_error(
         gctx.get::<StringList>("some_list").unwrap_err(),
-        "\
+        str![[r#"
 invalid configuration for key `some_list`
-expected a string or array of strings, but found a integer for `some_list` in [..]/.cargo/config.toml",
+expected a string or array of strings, but found a integer for `some_list` in [ROOT]/.cargo/config.toml
+"#]],
     );
 
     write_config_toml("some_list = \"1 2\"");
@@ -1589,7 +1588,7 @@ fn string_list_advanced_env() {
     assert_eq!(x.as_slice(), &["1 2".to_string(), "3".to_string()]);
     assert_error(
         gctx.get::<StringList>("key3").unwrap_err(),
-        "error in environment variable `CARGO_KEY3`: expected string, found integer",
+        str!["error in environment variable `CARGO_KEY3`: expected string, found integer"],
     );
 }
 
@@ -1625,13 +1624,25 @@ target-dir = ''
 
     assert_error(
         gctx.target_dir().unwrap_err(),
-        "the target directory is set to an empty string in [..]/.cargo/config.toml",
+        str!["the target directory is set to an empty string in [ROOT]/.cargo/config.toml"],
     );
 }
 
 #[cargo_test]
 fn cargo_target_empty_env() {
-    let project = project().build();
+    let project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                authors = []
+                version = "0.0.0"
+                build = "build.rs"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
 
     project.cargo("check")
         .env("CARGO_TARGET_DIR", "")
@@ -1640,7 +1651,7 @@ fn cargo_target_empty_env() {
 
 "#]])
         .with_status(101)
-        .run()
+        .run();
 }
 
 #[cargo_test]
@@ -1665,6 +1676,7 @@ fn all_profile_options() {
         build_override: None,
         rustflags: None,
         trim_paths: None,
+        hint_mostly_unused: None,
     };
     let mut overrides = BTreeMap::new();
     let key = cargo_toml::ProfilePackageSpec::Spec(PackageIdSpec::parse("foo").unwrap());
@@ -1785,9 +1797,10 @@ fn debuginfo_parsing() {
             .config_arg(format!("profile.dev.debug={err_val}"))
             .build();
         let err = gctx.get::<TomlDebugInfo>("profile.dev.debug").unwrap_err();
-        assert!(err
-            .to_string()
-            .ends_with("could not load config key `profile.dev.debug`"));
+        assert!(
+            err.to_string()
+                .ends_with("could not load config key `profile.dev.debug`")
+        );
     }
 }
 
@@ -1801,10 +1814,11 @@ fn build_jobs_missing() {
 
     let gctx = new_gctx();
 
-    assert!(gctx
-        .get::<Option<JobsConfig>>("build.jobs")
-        .unwrap()
-        .is_none());
+    assert!(
+        gctx.get::<Option<JobsConfig>>("build.jobs")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[cargo_test]
@@ -1929,11 +1943,12 @@ fn missing_fields() {
         .build();
     assert_error(
         gctx.get::<Foo>("foo").unwrap_err(),
-        "\
+        str![[r#"
 could not load config key `foo.bar`
 
 Caused by:
-  missing field `bax`",
+  missing field `bax`
+"#]],
     );
     let gctx: GlobalContext = GlobalContextBuilder::new()
         .env("CARGO_FOO_BAR_BAZ", "true")
@@ -1948,11 +1963,12 @@ Caused by:
         .build();
     assert_error(
         gctx.get::<Foo>("foo").unwrap_err(),
-        "\
+        str![[r#"
 error in --config cli option: could not load config key `foo.bar`
 
 Caused by:
-  missing field `bax`",
+  missing field `bax`
+"#]],
     );
 }
 
@@ -1973,13 +1989,14 @@ fn git_features() {
         .env("CARGO_UNSTABLE_GIT", "shallow-index,abc")
         .build();
     assert_error(
-        gctx.get::<Option<cargo::core::CliUnstable>>("unstable")
+        gctx.get::<Option<cargo::workspace::CliUnstable>>("unstable")
             .unwrap_err(),
-        "\
+        str![[r#"
 error in environment variable `CARGO_UNSTABLE_GIT`: could not load config key `unstable.git`
 
 Caused by:
-[..]unstable 'git' only takes [..] as valid inputs",
+  unstable 'git' only takes `shallow-index` and `shallow-deps` as valid inputs
+"#]],
     );
 
     let gctx = GlobalContextBuilder::new()
@@ -2064,7 +2081,7 @@ git = 'shallow-index'
 
     fn do_check(gctx: GlobalContext, expect: Option<GitFeatures>) -> bool {
         let unstable_flags = gctx
-            .get::<Option<cargo::core::CliUnstable>>("unstable")
+            .get::<Option<cargo::workspace::CliUnstable>>("unstable")
             .unwrap()
             .unwrap();
         unstable_flags.git == expect
@@ -2089,14 +2106,15 @@ fn gitoxide_features() {
         .build();
 
     assert_error(
-    gctx.get::<Option<cargo::core::CliUnstable>>("unstable")
-        .unwrap_err(),
-    "\
+        gctx.get::<Option<cargo::workspace::CliUnstable>>("unstable")
+            .unwrap_err(),
+        str![[r#"
 error in environment variable `CARGO_UNSTABLE_GITOXIDE`: could not load config key `unstable.gitoxide`
 
 Caused by:
-[..]unstable 'gitoxide' only takes [..] as valid inputs, for shallow fetches see `-Zgit=shallow-index,shallow-deps`",
-);
+  unstable 'gitoxide' only takes `fetch` and `checkout` and `internal-use-git2` as valid inputs, for shallow fetches see `-Zgit=shallow-index,shallow-deps`
+"#]],
+    );
 
     let gctx = GlobalContextBuilder::new()
         .env("CARGO_UNSTABLE_GITOXIDE", "true")
@@ -2157,9 +2175,497 @@ gitoxide = \"fetch\"
 
     fn do_check(gctx: GlobalContext, expect: Option<GitoxideFeatures>) -> bool {
         let unstable_flags = gctx
-            .get::<Option<cargo::core::CliUnstable>>("unstable")
+            .get::<Option<cargo::workspace::CliUnstable>>("unstable")
             .unwrap()
             .unwrap();
         unstable_flags.gitoxide == expect
     }
+}
+
+#[cargo_test]
+fn nonmergeable_lists() {
+    let root_path = paths::root().join(".cargo/config.toml");
+    write_config_at(
+        &root_path,
+        "\
+[registries.example]
+credential-provider = ['a', 'b']
+",
+    );
+
+    let foo_path = paths::root().join("foo/.cargo/config.toml");
+    write_config_at(
+        &foo_path,
+        "\
+[registries.example]
+credential-provider = ['c', 'd']
+",
+    );
+
+    let gctx = GlobalContextBuilder::new().cwd("foo").build();
+    let provider = gctx
+        .get::<Option<RegistryConfig>>(&format!("registries.example"))
+        .unwrap()
+        .unwrap()
+        .credential_provider
+        .unwrap();
+    assert_eq!(provider.path.raw_value(), "c");
+    assert_eq!(provider.args, ["d"]);
+
+    let cli_arg = "registries.example.credential-provider=['cli', 'cli-arg']";
+    let gctx = GlobalContextBuilder::new()
+        .config_arg(cli_arg)
+        .cwd("foo")
+        .build();
+    let provider = gctx
+        .get::<Option<RegistryConfig>>(&format!("registries.example"))
+        .unwrap()
+        .unwrap()
+        .credential_provider
+        .unwrap();
+    // expect: no merge happens; config CLI takes precedence
+    assert_eq!(provider.path.raw_value(), "cli");
+    assert_eq!(provider.args, ["cli-arg"]);
+
+    let env = "CARGO_REGISTRIES_EXAMPLE_CREDENTIAL_PROVIDER";
+    let gctx = GlobalContextBuilder::new()
+        .env(env, "env env-arg")
+        .cwd("foo")
+        .build();
+    let provider = gctx
+        .get::<Option<RegistryConfig>>(&format!("registries.example"))
+        .unwrap()
+        .unwrap()
+        .credential_provider
+        .unwrap();
+    // expect: no merge happens; env takes precedence over files
+    assert_eq!(provider.path.raw_value(), "env");
+    assert_eq!(provider.args, ["env-arg"]);
+
+    let gctx = GlobalContextBuilder::new()
+        .env(env, "env env-arg")
+        .config_arg(cli_arg)
+        .cwd("foo")
+        .build();
+    let provider = gctx
+        .get::<Option<RegistryConfig>>(&format!("registries.example"))
+        .unwrap()
+        .unwrap()
+        .credential_provider
+        .unwrap();
+    // expect: no merge happens; cli takes precedence over files and env
+    assert_eq!(provider.path.raw_value(), "cli");
+    assert_eq!(provider.args, ["cli-arg"]);
+}
+
+#[cargo_test]
+fn build_std() {
+    let gctx = GlobalContextBuilder::new()
+        .env("CARGO_UNSTABLE_BUILD_STD", "core,std,panic_abort")
+        .build();
+    let value = gctx
+        .get::<Option<cargo::workspace::CliUnstable>>("unstable")
+        .unwrap()
+        .unwrap()
+        .build_std
+        .unwrap();
+    assert_eq!(
+        value,
+        vec![
+            "core".to_string(),
+            "std".to_string(),
+            "panic_abort".to_string(),
+        ],
+    );
+
+    let gctx = GlobalContextBuilder::new()
+        .config_arg("unstable.build-std=['core', 'std,panic_abort']")
+        .build();
+    let value = gctx
+        .get::<Option<cargo::workspace::CliUnstable>>("unstable")
+        .unwrap()
+        .unwrap()
+        .build_std
+        .unwrap();
+    assert_eq!(
+        value,
+        vec![
+            "core".to_string(),
+            "std".to_string(),
+            "panic_abort".to_string(),
+        ]
+    );
+
+    let gctx = GlobalContextBuilder::new()
+        .env(
+            "CARGO_UNSTABLE_BUILD_STD_FEATURES",
+            "backtrace,panic-unwind,windows_raw_dylib",
+        )
+        .build();
+    let value = gctx
+        .get::<Option<cargo::workspace::CliUnstable>>("unstable")
+        .unwrap()
+        .unwrap()
+        .build_std_features
+        .unwrap();
+    assert_eq!(
+        value,
+        vec![
+            "backtrace".to_string(),
+            "panic-unwind".to_string(),
+            "windows_raw_dylib".to_string(),
+        ]
+    );
+
+    let gctx = GlobalContextBuilder::new()
+        .config_arg("unstable.build-std-features=['backtrace', 'panic-unwind,windows_raw_dylib']")
+        .build();
+    let value = gctx
+        .get::<Option<cargo::workspace::CliUnstable>>("unstable")
+        .unwrap()
+        .unwrap()
+        .build_std_features
+        .unwrap();
+    assert_eq!(
+        value,
+        vec![
+            "backtrace".to_string(),
+            "panic-unwind".to_string(),
+            "windows_raw_dylib".to_string(),
+        ]
+    );
+}
+
+#[cargo_test]
+fn array_of_any_types() {
+    write_config_toml(
+        r#"
+        ints = [1, 2, 3]
+
+        bools = [true, false, true]
+
+        strings = ["hello", "world", "test"]
+
+        [[tables]]
+        name = "first"
+        value = 1
+        [[tables]]
+        name = "second"
+        value = 2
+        "#,
+    );
+
+    let gctx = new_gctx();
+
+    // Test integer array
+    let ints: Vec<i32> = gctx.get("ints").unwrap();
+    assert_eq!(ints, vec![1, 2, 3]);
+
+    let bools: Vec<bool> = gctx.get("bools").unwrap();
+    assert_eq!(bools, vec![true, false, true]);
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct T {
+        name: String,
+        value: i32,
+    }
+    let tables: Vec<T> = gctx.get("tables").unwrap();
+    assert_eq!(
+        tables,
+        vec![
+            T {
+                name: "first".into(),
+                value: 1,
+            },
+            T {
+                name: "second".into(),
+                value: 2,
+            },
+        ]
+    );
+}
+
+#[cargo_test]
+fn array_env() {
+    // for environment, only strings are supported.
+    let gctx = GlobalContextBuilder::new()
+        .env("CARGO_INTS", "3 4 5")
+        .env("CARGO_BOOLS", "false true false")
+        .env("CARGO_STRINGS", "env1 env2 env3")
+        .build();
+
+    assert_error(
+        gctx.get::<Vec<i32>>("ints").unwrap_err(),
+        str![[r#"
+error in environment variable `CARGO_INTS`: failed to parse config at `ints[0]`
+
+Caused by:
+  invalid type: string "3", expected i32
+"#]],
+    );
+
+    assert_error(
+        gctx.get::<Vec<bool>>("bools").unwrap_err(),
+        str![[r#"
+error in environment variable `CARGO_BOOLS`: failed to parse config at `bools[0]`
+
+Caused by:
+  invalid type: string "false", expected a boolean
+"#]],
+    );
+
+    assert_eq!(
+        gctx.get::<Vec<String>>("strings").unwrap(),
+        vec!["env1".to_string(), "env2".to_string(), "env3".to_string()],
+    );
+}
+
+#[cargo_test]
+fn nested_array() {
+    let root_path = paths::root().join(".cargo/config.toml");
+    write_config_at(
+        &root_path,
+        r#"
+        nested_ints = [[1, 2], [3, 4]]
+        nested_bools = [[true], [false, true]]
+        nested_strings = [["a", "b"], ["3", "4"]]
+        nested_tables = [
+            [
+                { x = "a" },
+                { x = "b" },
+            ],
+            [
+                { x = "c" },
+                { x = "d" },
+            ],
+        ]
+        deeply_nested = [[
+            { x = [[[ { x = [], y = 2  } ]]], y = 1 },
+        ]]
+        "#,
+    );
+
+    let gctx = GlobalContextBuilder::new()
+        .config_arg("nested_ints = [[5]]")
+        .build();
+
+    let nested = gctx.get::<Vec<Vec<i32>>>("nested_ints").unwrap();
+    assert_eq!(nested, vec![vec![1, 2], vec![3, 4], vec![5]]);
+
+    // exercising Value and Definition
+    let nested = gctx
+        .get::<Vec<Value<Vec<Value<i32>>>>>("nested_ints")
+        .unwrap();
+    let def = Definition::Path(root_path);
+    assert_eq!(
+        nested,
+        vec![
+            Value {
+                val: vec![
+                    Value {
+                        val: 1,
+                        definition: def.clone(),
+                    },
+                    Value {
+                        val: 2,
+                        definition: def.clone(),
+                    },
+                ],
+                definition: def.clone()
+            },
+            Value {
+                val: vec![
+                    Value {
+                        val: 3,
+                        definition: def.clone(),
+                    },
+                    Value {
+                        val: 4,
+                        definition: def.clone(),
+                    },
+                ],
+                definition: def.clone(),
+            },
+            Value {
+                val: vec![Value {
+                    val: 5,
+                    definition: Definition::Cli(None),
+                },],
+                definition: Definition::Cli(None),
+            },
+        ]
+    );
+
+    let nested = gctx.get::<Vec<Vec<bool>>>("nested_bools").unwrap();
+    assert_eq!(nested, vec![vec![true], vec![false, true]]);
+
+    let nested = gctx.get::<Vec<Vec<String>>>("nested_strings").unwrap();
+    assert_eq!(
+        nested,
+        vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["3".to_string(), "4".to_string()]
+        ]
+    );
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct S {
+        x: Vec<Vec<Vec<S>>>,
+        y: i32,
+    }
+    let nested = gctx.get::<Vec<Vec<S>>>("deeply_nested").unwrap();
+    assert_eq!(
+        nested,
+        vec![vec![S {
+            x: vec![vec![vec![S { x: vec![], y: 2 }]]],
+            y: 1,
+        }]],
+    );
+}
+
+#[cargo_test]
+fn mixed_type_array() {
+    let root_path = paths::root().join(".cargo/config.toml");
+    write_config_at(&root_path, r#"a = [{ x = 1 }]"#);
+
+    let foo_path = paths::root().join("foo/.cargo/config.toml");
+    write_config_at(&foo_path, r#"a = [true, [false]]"#);
+
+    let gctx = GlobalContextBuilder::new()
+        .cwd("foo")
+        .env("CARGO_A", "hello")
+        .config_arg("a = [123]")
+        .build();
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(untagged)]
+    enum Item {
+        B(bool),
+        I(i32),
+        S(String),
+        T { x: i32 },
+        L(Vec<bool>),
+    }
+
+    use Item::*;
+
+    // Simple vector works
+    assert_eq!(
+        gctx.get::<Vec<Item>>("a").unwrap(),
+        vec![
+            T { x: 1 },
+            B(true),
+            L(vec![false]),
+            S("hello".into()),
+            I(123)
+        ],
+    );
+
+    // Value and Definition works
+    assert_eq!(
+        gctx.get::<Value<Vec<Value<Item>>>>("a").unwrap(),
+        Value {
+            val: vec![
+                Value {
+                    val: T { x: 1 },
+                    definition: Definition::Path(root_path.clone()),
+                },
+                Value {
+                    val: B(true),
+                    definition: Definition::Path(foo_path.clone()),
+                },
+                Value {
+                    val: L(vec![false]),
+                    definition: Definition::Path(foo_path.clone()),
+                },
+                Value {
+                    val: S("hello".into()),
+                    definition: Definition::Environment("CARGO_A".into()),
+                },
+                Value {
+                    val: I(123),
+                    definition: Definition::Cli(None),
+                },
+            ],
+            definition: Definition::Environment("CARGO_A".into()),
+        }
+    );
+}
+
+#[cargo_test]
+fn config_symlink_home_duplicate_load() {
+    // Test that when CARGO_HOME is accessed via a symlink that points to a directory
+    // already in the config search path, the config file is not loaded twice.
+
+    use cargo_test_support::basic_manifest;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as symlink;
+
+    let p = project()
+        .file("Cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("src/lib.rs", "")
+        .build();
+
+    // Create directory structure a/b/ and symlink c -> a
+    let a_dir = p.root().join("a");
+    let b_dir = a_dir.join("b");
+    let c_symlink = p.root().join("c");
+
+    fs::create_dir_all(&b_dir).unwrap();
+    symlink(&a_dir, &c_symlink).unwrap();
+
+    // Create config file in a/.cargo/
+    let cargo_config_dir = a_dir.join(".cargo");
+    fs::create_dir(&cargo_config_dir).unwrap();
+    let config_path = cargo_config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[build]
+rustdocflags = ["--default-theme=dark"]
+"#,
+    )
+    .unwrap();
+
+    // Move the project into a/b/
+    let project_in_b = b_dir.join("foo");
+    fs::create_dir(&project_in_b).unwrap();
+    fs::write(
+        project_in_b.join("Cargo.toml"),
+        &basic_manifest("foo", "0.1.0"),
+    )
+    .unwrap();
+    fs::create_dir(project_in_b.join("src")).unwrap();
+    fs::write(project_in_b.join("src/lib.rs"), "").unwrap();
+
+    // Set CARGO_HOME to ../../c/.cargo (which is really a/.cargo via symlink)
+    let cargo_home = c_symlink.join(".cargo");
+
+    // If config is loaded twice, rustdocflags will be duplicated and cause an error
+    p.cargo("doc")
+        .cwd(&project_in_b)
+        .env("CARGO_HOME", &cargo_home)
+        .run();
+}
+
+#[cargo_test]
+fn unstable_embed_metadata() {
+    write_config_toml(
+        "\
+[unstable]
+embed-metadata = false
+",
+    );
+
+    let gctx = new_gctx();
+
+    let value = gctx
+        .get::<Option<bool>>("unstable.embed-metadata")
+        .unwrap()
+        .unwrap();
+    assert!(!value);
 }

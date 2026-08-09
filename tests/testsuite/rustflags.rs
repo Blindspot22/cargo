@@ -2,9 +2,12 @@
 
 use std::fs;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::Package;
-use cargo_test_support::{basic_manifest, paths, project, project_in_home, rustc_host, str};
+use cargo_test_support::{
+    RawOutput, basic_manifest, paths, project, project_in_home, rustc_host, str,
+};
+use snapbox::assert_data_eq;
 
 #[cargo_test]
 fn env_rustflags_normal_source() {
@@ -1438,12 +1441,12 @@ fn env_rustflags_misspelled() {
     for cmd in &["check", "build", "run", "test", "bench"] {
         p.cargo(cmd)
             .env("RUST_FLAGS", "foo")
-            .with_stderr_data(
-                "\
-[WARNING] Cargo does not read `RUST_FLAGS` environment variable. Did you mean `RUSTFLAGS`?
+            .with_stderr_data(str![[r#"
+[WARNING] ignoring environment variable `RUST_FLAGS`
+  |
+  = [HELP] rust flags are passed via `RUSTFLAGS`
 ...
-",
-            )
+"#]])
             .run();
     }
 }
@@ -1468,46 +1471,14 @@ fn env_rustflags_misspelled_build_script() {
     p.cargo("check")
         .env("RUST_FLAGS", "foo")
         .with_stderr_data(str![[r#"
-[WARNING] Cargo does not read `RUST_FLAGS` environment variable. Did you mean `RUSTFLAGS`?
+[WARNING] ignoring environment variable `RUST_FLAGS`
+  |
+  = [HELP] rust flags are passed via `RUSTFLAGS`
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
         .run();
-}
-
-#[cargo_test]
-fn remap_path_prefix_ignored() {
-    // Ensure that --remap-path-prefix does not affect metadata hash.
-    let p = project().file("src/lib.rs", "").build();
-    p.cargo("build").run();
-    let rlibs = p
-        .glob("target/debug/deps/*.rlib")
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(rlibs.len(), 1);
-    p.cargo("clean").run();
-
-    let check_metadata_same = || {
-        let rlibs2 = p
-            .glob("target/debug/deps/*.rlib")
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(rlibs, rlibs2);
-    };
-
-    p.cargo("build")
-        .env(
-            "RUSTFLAGS",
-            "--remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo",
-        )
-        .run();
-    check_metadata_same();
-
-    p.cargo("clean").run();
-    p.cargo("rustc -- --remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo")
-        .run();
-    check_metadata_same();
 }
 
 #[cargo_test]
@@ -1549,6 +1520,142 @@ fn remap_path_prefix_works() {
 
 "#]])
         .run();
+}
+
+#[cargo_test]
+fn rustflags_remap_path_prefix_ignored_for_c_metadata() {
+    let p = project().file("src/lib.rs", "").build();
+
+    let build_output = p
+        .cargo("build -v")
+        .env(
+            "RUSTFLAGS",
+            "--remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo",
+        )
+        .run();
+    let first_c_metadata = dbg!(get_c_metadata(build_output));
+
+    p.cargo("clean").run();
+
+    let build_output = p
+        .cargo("build -v")
+        .env(
+            "RUSTFLAGS",
+            "--remap-path-prefix=/def=/zoo --remap-path-prefix /earth=/zoo",
+        )
+        .run();
+    let second_c_metadata = dbg!(get_c_metadata(build_output));
+
+    assert_data_eq!(first_c_metadata, second_c_metadata);
+}
+
+#[cargo_test]
+fn rustc_remap_path_prefix_ignored_for_c_metadata() {
+    let p = project().file("src/lib.rs", "").build();
+
+    let build_output = p
+        .cargo("rustc -v -- --remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo")
+        .run();
+    let first_c_metadata = dbg!(get_c_metadata(build_output));
+
+    p.cargo("clean").run();
+
+    let build_output = p
+        .cargo("rustc -v -- --remap-path-prefix=/def=/zoo --remap-path-prefix /earth=/zoo")
+        .run();
+    let second_c_metadata = dbg!(get_c_metadata(build_output));
+
+    assert_data_eq!(first_c_metadata, second_c_metadata);
+}
+
+// `--remap-path-prefix` is meant to take two different binaries and make them the same but the
+// rlib name, including `-Cextra-filename`, can still end up in the binary so it can't change
+#[cargo_test]
+fn rustflags_remap_path_prefix_ignored_for_c_extra_filename() {
+    let p = project().file("src/lib.rs", "").build();
+
+    let build_output = p
+        .cargo("build -v")
+        .env(
+            "RUSTFLAGS",
+            "--remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo",
+        )
+        .run();
+    let first_c_extra_filename = dbg!(get_c_extra_filename(build_output));
+
+    p.cargo("clean").run();
+
+    let build_output = p
+        .cargo("build -v")
+        .env(
+            "RUSTFLAGS",
+            "--remap-path-prefix=/def=/zoo --remap-path-prefix /earth=/zoo",
+        )
+        .run();
+    let second_c_extra_filename = dbg!(get_c_extra_filename(build_output));
+
+    assert_data_eq!(first_c_extra_filename, second_c_extra_filename);
+}
+
+// `--remap-path-prefix` is meant to take two different binaries and make them the same but the
+// rlib name, including `-Cextra-filename`, can still end up in the binary so it can't change
+#[cargo_test]
+fn rustc_remap_path_prefix_ignored_for_c_extra_filename() {
+    let p = project().file("src/lib.rs", "").build();
+
+    let build_output = p
+        .cargo("rustc -v -- --remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo")
+        .run();
+    let first_c_extra_filename = dbg!(get_c_extra_filename(build_output));
+
+    p.cargo("clean").run();
+
+    let build_output = p
+        .cargo("rustc -v -- --remap-path-prefix=/def=/zoo --remap-path-prefix /earth=/zoo")
+        .run();
+    let second_c_extra_filename = dbg!(get_c_extra_filename(build_output));
+
+    assert_data_eq!(first_c_extra_filename, second_c_extra_filename);
+}
+
+fn get_c_metadata(output: RawOutput) -> String {
+    let get_c_metadata_re =
+        regex::Regex::new(r".* (--crate-name [^ ]+).* (-C ?metadata=[^ ]+).*").unwrap();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let mut c_metadata = get_c_metadata_re
+        .captures_iter(&stderr)
+        .map(|c| {
+            let (_, [name, c_metadata]) = c.extract();
+            format!("{name} {c_metadata}")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !c_metadata.is_empty(),
+        "`{get_c_metadata_re:?}` did not match:\n```\n{stderr}\n```"
+    );
+    c_metadata.sort();
+    c_metadata.join("\n")
+}
+
+fn get_c_extra_filename(output: RawOutput) -> String {
+    let get_c_extra_filename_re =
+        regex::Regex::new(r".* (--crate-name [^ ]+).* (-C ?extra-filename=[^ ]+).*").unwrap();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let mut c_extra_filename = get_c_extra_filename_re
+        .captures_iter(&stderr)
+        .map(|c| {
+            let (_, [name, c_extra_filename]) = c.extract();
+            format!("{name} {c_extra_filename}")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !c_extra_filename.is_empty(),
+        "`{get_c_extra_filename_re:?}` did not match:\n```\n{stderr}\n```"
+    );
+    c_extra_filename.sort();
+    c_extra_filename.join("\n")
 }
 
 #[cargo_test]
@@ -1668,7 +1775,7 @@ fn host_config_shared_build_dep() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] cc v1.0.0 (registry `dummy-registry`)
 [COMPILING] cc v1.0.0

@@ -1,6 +1,6 @@
 //! Tests specifically related to target handling (lib, bins, examples, tests, benches).
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::str;
 
@@ -54,7 +54,8 @@ fn reserved_windows_target_name() {
     if cfg!(windows) {
         p.cargo("check")
             .with_stderr_data(str![[r#"
-[WARNING] binary target `con` is a reserved Windows filename, this target will not work on Windows platforms
+[WARNING] Cargo.toml: binary target `con` is a reserved Windows filename, this target will not work on Windows platforms
+[WARNING] `foo` (manifest) generated 1 warning
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 

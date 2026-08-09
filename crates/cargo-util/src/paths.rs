@@ -57,6 +57,8 @@ pub fn dylib_path_envvar() -> &'static str {
         "DYLD_FALLBACK_LIBRARY_PATH"
     } else if cfg!(target_os = "aix") {
         "LIBPATH"
+    } else if cfg!(target_os = "haiku") {
+        "LIBRARY_PATH"
     } else {
         "LD_LIBRARY_PATH"
     }
@@ -189,9 +191,20 @@ pub fn write<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> Result<()>
 
 /// Writes a file to disk atomically.
 ///
-/// write_atomic uses tempfile::persist to accomplish atomic writes.
+/// This uses `tempfile::persist` to accomplish atomic writes.
+/// If the path is a symlink, it will follow the symlink and write to the actual target.
 pub fn write_atomic<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> Result<()> {
     let path = path.as_ref();
+
+    // Check if the path is a symlink and follow it if it is
+    let resolved_path;
+    let path = if path.is_symlink() {
+        resolved_path = fs::read_link(path)
+            .with_context(|| format!("failed to read symlink at `{}`", path.display()))?;
+        &resolved_path
+    } else {
+        path
+    };
 
     // On unix platforms, get the permissions of the original file. Copy only the user/group/other
     // read/write/execute permission bits. The tempfile lib defaults to an initial mode of 0o600,
@@ -200,8 +213,8 @@ pub fn write_atomic<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> Res
     let perms = path.metadata().ok().map(|meta| {
         use std::os::unix::fs::PermissionsExt;
 
-        // these constants are u16 on macOS
-        let mask = u32::from(libc::S_IRWXU | libc::S_IRWXG | libc::S_IRWXO);
+        // these constants are u16 on macOS and i32 on Redox
+        let mask = (libc::S_IRWXU | libc::S_IRWXG | libc::S_IRWXO) as u32;
         let mode = meta.permissions().mode() & mask;
 
         std::fs::Permissions::from_mode(mode)
@@ -611,8 +624,6 @@ fn _link_or_copy(src: &Path, dst: &Path) -> Result<()> {
     }
 
     let link_result = if src.is_dir() {
-        #[cfg(target_os = "redox")]
-        use std::os::redox::fs::symlink;
         #[cfg(unix)]
         use std::os::unix::fs::symlink;
         #[cfg(windows)]
@@ -710,9 +721,9 @@ pub fn set_file_time_no_err<P: AsRef<Path>>(path: P, time: FileTime) {
 /// This canonicalizes both paths before stripping. This is useful if the
 /// paths are obtained in different ways, and one or the other may or may not
 /// have been normalized in some way.
-pub fn strip_prefix_canonical<P: AsRef<Path>>(
-    path: P,
-    base: P,
+pub fn strip_prefix_canonical(
+    path: impl AsRef<Path>,
+    base: impl AsRef<Path>,
 ) -> Result<PathBuf, std::path::StripPrefixError> {
     // Not all filesystems support canonicalize. Just ignore if it doesn't work.
     let safe_canonicalize = |path: &Path| match path.canonicalize() {
@@ -789,7 +800,7 @@ pub fn exclude_from_backups_and_indexing(p: impl AsRef<Path>) {
 /// * A dedicated resource property excluding from Time Machine backups on macOS
 /// * CACHEDIR.TAG files supported by various tools in a platform-independent way
 fn exclude_from_backups(path: &Path) {
-    exclude_from_time_machine(path);
+    exclude_from_time_machine_and_cloud_sync(path);
     let file = path.join("CACHEDIR.TAG");
     if !file.exists() {
         let _ = std::fs::write(
@@ -799,7 +810,7 @@ fn exclude_from_backups(path: &Path) {
 # For information about cache directory tags see https://bford.info/cachedir/
 ",
         );
-        // Similarly to exclude_from_time_machine() we ignore errors here as it's an optional feature.
+        // Similarly to exclude_from_time_machine_and_cloud_sync() we ignore errors here as it's an optional feature.
     }
 }
 
@@ -816,7 +827,7 @@ fn exclude_from_content_indexing(path: &Path) {
         use std::iter::once;
         use std::os::windows::prelude::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
-            GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+            FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, GetFileAttributesW, SetFileAttributesW,
         };
 
         let path: Vec<u16> = path.as_os_str().encode_wide().chain(once(0)).collect();
@@ -834,19 +845,31 @@ fn exclude_from_content_indexing(path: &Path) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn exclude_from_time_machine(_: &Path) {}
+fn exclude_from_time_machine_and_cloud_sync(_: &Path) {}
 
 #[cfg(target_os = "macos")]
-/// Marks files or directories as excluded from Time Machine on macOS
-fn exclude_from_time_machine(path: &Path) {
+/// Marks files or directories as excluded from Time Machine and iCloud Drive on macOS
+fn exclude_from_time_machine_and_cloud_sync(path: &Path) {
     use core_foundation::base::TCFType;
     use core_foundation::{number, string, url};
     use std::ptr;
 
-    // For compatibility with 10.7 a string is used instead of global kCFURLIsExcludedFromBackupKey
-    let is_excluded_key: Result<string::CFString, _> = "NSURLIsExcludedFromBackupKey".parse();
-    let path = url::CFURL::from_path(path, false);
-    if let (Some(path), Ok(is_excluded_key)) = (path, is_excluded_key) {
+    let path = match url::CFURL::from_path(path, false) {
+        Some(url) => url,
+        None => return,
+    };
+
+    // For compatibility with old systems strings are used instead of global symbols
+    const KEY_NAMES: [&str; 2] = [
+        "NSURLIsExcludedFromBackupKey", // kCFURLIsExcludedFromBackupKey
+        "NSURLUbiquitousItemIsExcludedFromSyncKey", // kCFURLUbiquitousItemIsExcludedFromSyncKey
+    ];
+
+    for key_name in KEY_NAMES {
+        let is_excluded_key = match key_name.parse::<string::CFString>() {
+            Ok(key) => key,
+            Err(_) => continue,
+        };
         unsafe {
             url::CFURLSetResourcePropertyForKey(
                 path.as_concrete_TypeRef(),
@@ -926,9 +949,9 @@ mod tests {
     fn write_atomic_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let original_perms = std::fs::Permissions::from_mode(u32::from(
-            libc::S_IRWXU | libc::S_IRGRP | libc::S_IWGRP | libc::S_IROTH,
-        ));
+        let original_perms = std::fs::Permissions::from_mode(
+            (libc::S_IRWXU | libc::S_IRGRP | libc::S_IWGRP | libc::S_IROTH) as u32,
+        );
 
         let tmp = tempfile::Builder::new().tempfile().unwrap();
 
@@ -943,7 +966,7 @@ mod tests {
 
         let new_perms = std::fs::metadata(tmp.path()).unwrap().permissions();
 
-        let mask = u32::from(libc::S_IRWXU | libc::S_IRWXG | libc::S_IRWXO);
+        let mask = (libc::S_IRWXU | libc::S_IRWXG | libc::S_IRWXO) as u32;
         assert_eq!(original_perms.mode(), new_perms.mode() & mask);
     }
 
@@ -981,6 +1004,33 @@ mod tests {
              "
             );
         }
+    }
+
+    #[test]
+    fn write_atomic_symlink() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let target_path = tmpdir.path().join("target.txt");
+        let symlink_path = tmpdir.path().join("symlink.txt");
+
+        // Create initial file
+        write(&target_path, "initial").unwrap();
+
+        // Create symlink
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &symlink_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_path, &symlink_path).unwrap();
+
+        // Write through symlink
+        write_atomic(&symlink_path, "updated").unwrap();
+
+        // Verify both paths show the updated content
+        assert_eq!(std::fs::read_to_string(&target_path).unwrap(), "updated");
+        assert_eq!(std::fs::read_to_string(&symlink_path).unwrap(), "updated");
+
+        // Verify symlink still exists and points to the same target
+        assert!(symlink_path.is_symlink());
+        assert_eq!(std::fs::read_link(&symlink_path).unwrap(), target_path);
     }
 
     #[test]

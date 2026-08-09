@@ -1,12 +1,12 @@
 //! Tests for `[features]` table.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::registry::{Dependency, Package};
-use cargo_test_support::str;
 use cargo_test_support::{basic_manifest, project};
+use cargo_test_support::{rustc_host, str};
 
 #[cargo_test]
-fn invalid1() {
+fn feature_activates_missing_feature() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -31,6 +31,42 @@ fn invalid1() {
 
 Caused by:
   feature `bar` includes `baz` which is neither a dependency nor another feature
+
+  [HELP] a feature with a similar name exists: `bar`
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn feature_activates_typoed_feature() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [features]
+                bar = ["baz"]
+                jaz = []
+            "#,
+        )
+        .file("src/main.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
+
+Caused by:
+  feature `bar` includes `baz` which is neither a dependency nor another feature
+
+  [HELP] a feature with a similar name exists: `bar`
 
 "#]])
         .run();
@@ -63,7 +99,6 @@ fn empty_feature_name() {
   |
 9 |                 "" = []
   |                 ^^
-  |
 
 "#]])
         .run();
@@ -98,7 +133,7 @@ fn same_name() {
     p.cargo("tree -f")
         .arg("{p} [{f}]")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .with_stdout_data(str![[r#"
@@ -120,7 +155,7 @@ foo v0.0.1 ([ROOT]/foo) [bar,baz]
 }
 
 #[cargo_test]
-fn invalid3() {
+fn feature_activates_required_dependency() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -155,7 +190,7 @@ Caused by:
 }
 
 #[cargo_test]
-fn invalid4() {
+fn dependency_activates_missing_feature() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -183,7 +218,7 @@ fn invalid4() {
     ... required by package `foo v0.0.1 ([ROOT]/foo)`
 versions that meet the requirements `*` are: 0.0.1
 
-the package `foo` depends on `bar`, with features: `bar` but `bar` does not have these features.
+package `foo` depends on `bar` with feature `bar` but `bar` does not have that feature.
 
 
 failed to select a version for `bar` which could resolve this conflict
@@ -196,14 +231,116 @@ failed to select a version for `bar` which could resolve this conflict
     p.cargo("check --features test")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] Package `foo v0.0.1 ([ROOT]/foo)` does not have the feature `test`
+[ERROR] package `foo v0.0.1 ([ROOT]/foo)` does not have the feature `test`
 
 "#]])
         .run();
 }
 
 #[cargo_test]
-fn invalid5() {
+fn dependency_activates_typoed_feature() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [dependencies.bar]
+                path = "bar"
+                features = ["bar"]
+            "#,
+        )
+        .file("src/main.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [features]
+                baz = []
+"#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to select a version for `bar`.
+    ... required by package `foo v0.0.1 ([ROOT]/foo)`
+versions that meet the requirements `*` are: 0.0.1
+
+package `foo` depends on `bar` with feature `bar` but `bar` does not have that feature.
+[HELP] there is a feature `baz` with a similar name
+
+
+failed to select a version for `bar` which could resolve this conflict
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn dependency_activates_feature_with_no_close_match() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+
+                [dependencies.bar]
+                path = "bar"
+                features = ["serde"]
+            "#,
+        )
+        .file("src/main.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.0.1"
+                edition = "2015"
+
+                [features]
+                json = []
+                tls = []
+                cookies = []
+"#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] failed to select a version for `bar`.
+    ... required by package `foo v0.0.1 ([ROOT]/foo)`
+versions that meet the requirements `*` are: 0.0.1
+
+package `foo` depends on `bar` with feature `serde` but `bar` does not have that feature.
+[HELP] available features: cookies, json, tls
+
+
+failed to select a version for `bar` which could resolve this conflict
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn optional_dev_dependency() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -235,7 +372,7 @@ Caused by:
 }
 
 #[cargo_test]
-fn invalid6() {
+fn feature_activates_missing_dep_feature() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -261,7 +398,6 @@ fn invalid6() {
   |
 9 |                 foo = ["bar/baz"]
   |                       ^^^^^^^^^^^
-  |
 [ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
 
 "#]])
@@ -269,7 +405,7 @@ fn invalid6() {
 }
 
 #[cargo_test]
-fn invalid7() {
+fn feature_activates_feature_inside_feature() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -296,7 +432,6 @@ fn invalid7() {
   |
 9 |                 foo = ["bar/baz"]
   |                       ^^^^^^^^^^^
-  |
 [ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
 
 "#]])
@@ -304,7 +439,7 @@ fn invalid7() {
 }
 
 #[cargo_test]
-fn invalid8() {
+fn dependency_activates_dep_feature() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -339,7 +474,7 @@ Caused by:
 }
 
 #[cargo_test]
-fn invalid9() {
+fn cli_activates_required_dependency() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -361,8 +496,10 @@ fn invalid9() {
 
     p.cargo("check --features bar")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
-[ERROR] Package `foo v0.0.1 ([ROOT]/foo)` does not have feature `bar`. It has a required dependency with that name, but only optional dependencies can be used as features.
+[LOCKING] 1 package to highest compatible version
+[ERROR] package `foo v0.0.1 ([ROOT]/foo)` does not have feature `bar`
+
+[HELP] a dependency with that name exists but it is required dependency and only optional dependencies can be used as features.
 
 "#]])
         .with_status(101)
@@ -370,7 +507,7 @@ fn invalid9() {
 }
 
 #[cargo_test]
-fn invalid10() {
+fn dependency_activates_required_dependency() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -411,8 +548,8 @@ fn invalid10() {
     ... required by package `foo v0.0.1 ([ROOT]/foo)`
 versions that meet the requirements `*` are: 0.0.1
 
-the package `foo` depends on `bar`, with features: `baz` but `bar` does not have these features.
- It has a required dependency with that name, but only optional dependencies can be used as features.
+package `foo` depends on `bar` with feature `baz` but `bar` does not have that feature.
+[NOTE] a required dependency with that name exists, but only optional dependencies can be used as features.
 
 
 failed to select a version for `bar` which could resolve this conflict
@@ -529,7 +666,7 @@ fn no_feature_doesnt_build() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -605,7 +742,7 @@ fn default_feature_pulled_in() {
 
     p.cargo("build")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -748,7 +885,7 @@ fn groups_on_groups_on_groups() {
     p.cargo("check")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] bar v0.0.1 ([ROOT]/foo/bar)
 [CHECKING] baz v0.0.1 ([ROOT]/foo/baz)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -801,7 +938,7 @@ fn many_cli_features() {
         .arg("bar baz")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] bar v0.0.1 ([ROOT]/foo/bar)
 [CHECKING] baz v0.0.1 ([ROOT]/foo/baz)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -889,7 +1026,7 @@ fn union_features() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] d2 v0.0.1 ([ROOT]/foo/d2)
 [CHECKING] d1 v0.0.1 ([ROOT]/foo/d1)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -937,7 +1074,7 @@ fn many_features_no_rebuilds() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [CHECKING] b v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1238,7 +1375,7 @@ fn optional_and_dev_dep() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] test v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1526,7 +1663,7 @@ fn many_cli_features_comma_delimited() {
     p.cargo("check --features bar,baz")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [CHECKING] bar v0.0.1 ([ROOT]/foo/bar)
 [CHECKING] baz v0.0.1 ([ROOT]/foo/baz)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
@@ -1595,7 +1732,7 @@ fn many_cli_features_comma_and_space_delimited() {
         .arg("bar,baz bam bap")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 4 packages to latest compatible versions
+[LOCKING] 4 packages to highest compatible versions
 [CHECKING] bam v0.0.1 ([ROOT]/foo/bam)
 [CHECKING] bap v0.0.1 ([ROOT]/foo/bap)
 [CHECKING] bar v0.0.1 ([ROOT]/foo/bar)
@@ -1765,13 +1902,17 @@ fn warn_if_default_features() {
         .file("bar/src/lib.rs", "pub fn bar() {}")
         .build();
 
-    p.cargo("check").with_stderr_data(str![[r#"
-[WARNING] `default-features = [".."]` was found in [features]. Did you mean to use `default = [".."]`?
-[LOCKING] 1 package to latest compatible version
+    p.cargo("check")
+        .with_stderr_data(str![[r#"
+[WARNING] Cargo.toml: `[features]` defines a feature named `default-features`
+[NOTE] only a feature named `default` will be enabled by default
+[WARNING] `foo` (manifest) generated 1 warning
+[LOCKING] 1 package to highest compatible version
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
-"#]]).run();
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -2123,19 +2264,22 @@ fn registry_summary_order_doesnt_matter() {
         .build();
 
     p.cargo("run")
-        .with_stderr_data(str![[r#"
+        .with_stderr_data(
+            str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
-[DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] bar v0.1.0 (registry `dummy-registry`)
+[DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [COMPILING] dep v0.1.0
 [COMPILING] bar v0.1.0
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] `target/debug/foo[EXE]`
 
-"#]])
+"#]]
+            .unordered(),
+        )
         .with_stdout_data(str![[r#"
 it works
 
@@ -2217,7 +2361,6 @@ fn invalid_feature_names_error() {
   |
 9 |                 "+foo" = []
   |                 ^^^^^^
-  |
 
 "#]])
         .run();
@@ -2244,7 +2387,6 @@ fn invalid_feature_names_error() {
   |
 9 |             "a&b" = []
   |             ^^^^^
-  |
 
 "#]])
         .run();
@@ -2277,8 +2419,42 @@ fn invalid_feature_name_slash_error() {
   |
 8 |                 "foo/bar" = []
   |                 ^^^^^^^^^
-  |
 
 "#]])
+        .run();
+}
+
+#[cargo_test]
+fn dont_demand_not_required_dep() {
+    Package::new("not-required", "1.0.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+[package]
+name = "sample"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["feat"]
+feat = ["dep:not-required"]
+
+[target.'cfg(false)'.dependencies]
+not-required = { version = "1.0", optional = true }
+
+[[example]]
+name = "demo"
+required-features = ["feat"]
+"#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("examples/demo.rs", "fn main() {}")
+        .build();
+
+    let host = rustc_host();
+    p.cargo(&format!("fetch --target={host}")).run();
+    p.cargo(&format!("check --target={host} --examples --frozen"))
         .run();
 }

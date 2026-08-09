@@ -1,7 +1,7 @@
 //! Tests for `[env]` config.
 
+use crate::prelude::*;
 use cargo_test_support::basic_manifest;
-use cargo_test_support::prelude::*;
 use cargo_test_support::str;
 use cargo_test_support::{basic_bin_manifest, project};
 
@@ -61,9 +61,6 @@ fn env_invalid() {
         .with_status(101)
         .with_stderr_data(str![[r#"
 [ERROR] error in [ROOT]/foo/.cargo/config.toml: could not load config key `env.ENV_TEST_BOOL`
-
-Caused by:
-  error in [ROOT]/foo/.cargo/config.toml: could not load config key `env.ENV_TEST_BOOL`
 
 Caused by:
   invalid type: boolean `false`, expected a string or map

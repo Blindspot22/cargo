@@ -2,14 +2,15 @@
 
 use std::fs;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use crate::utils::cargo_exe;
 use cargo_test_support::registry::Package;
-use cargo_test_support::{
-    basic_bin_manifest, basic_lib_manifest, basic_manifest, cargo_exe, project, str,
-};
+use cargo_test_support::{basic_bin_manifest, basic_lib_manifest, basic_manifest, project, str};
 use cargo_test_support::{cross_compile, paths};
 use cargo_test_support::{rustc_host, rustc_host_env, sleep_ms};
 use cargo_util::paths::dylib_path_envvar;
+
+use crate::utils::cross_compile::can_run_on_host as cross_compile_can_run_on_host;
 
 #[cargo_test]
 fn cargo_test_simple() {
@@ -100,7 +101,7 @@ fn cargo_test_release() {
 
     p.cargo("test -v --release")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [RUNNING] `rustc [..]-C opt-level=3 [..]`
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
@@ -610,7 +611,7 @@ fn test_with_deep_lib_dep() {
 
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1455,7 +1456,7 @@ fn test_dylib() {
 
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1831,6 +1832,9 @@ fn test_run_implicit_example_target() {
                 [[example]]
                 name = "myexm2"
                 test = true
+
+                [profile.test]
+                panic = "abort" # this should be ignored by default Cargo targets set.
             "#,
         )
         .file(
@@ -1852,11 +1856,13 @@ fn test_run_implicit_example_target() {
         )
         .build();
 
-    // Compiles myexm1 as normal, but does not run it.
+    // Compiles myexm1 as normal binary (without --test), but does not run it.
     prj.cargo("test -v")
         .with_stderr_contains("[RUNNING] `rustc [..]myexm1.rs [..]--crate-type bin[..]")
         .with_stderr_contains("[RUNNING] `rustc [..]myexm2.rs [..]--test[..]")
         .with_stderr_does_not_contain("[RUNNING] [..]myexm1-[..]")
+        // profile.test panic settings shouldn't be applied even to myexm1
+        .with_stderr_line_without(&["[RUNNING] `rustc --crate-name myexm1"], &["panic=abort"])
         .with_stderr_contains("[RUNNING] [..]target/debug/examples/myexm2-[..]")
         .run();
 
@@ -1995,7 +2001,7 @@ fn test_no_harness() {
         .file("foo.rs", "fn main() {}")
         .build();
 
-    p.cargo("test -- --nocapture")
+    p.cargo("test -- --no-capture")
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -2071,7 +2077,7 @@ fn selective_testing() {
     println!("d1");
     p.cargo("test -p d1")
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] d1 v0.0.1 ([ROOT]/foo/d1)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] unittests src/lib.rs (target/debug/deps/d1-[HASH][EXE])
@@ -2301,7 +2307,7 @@ fn selective_testing_with_docs() {
 
     p.cargo("test -p d1")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] d1 v0.0.1 ([ROOT]/foo/d1)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] unittests d1.rs (target/debug/deps/d1-[HASH][EXE])
@@ -2410,7 +2416,7 @@ fn example_with_dev_dep() {
     p.cargo("test -v")
         .with_stderr_data(
             str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [RUNNING] `rustc --crate-name foo [..]`
@@ -2447,16 +2453,14 @@ fn bad_example() {
     p.cargo("run --example foo")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] no example target named `foo`.
-
+[ERROR] no example target named `foo` in default-run packages
 
 "#]])
         .run();
     p.cargo("run --bin foo")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] no bin target named `foo`.
-
+[ERROR] no bin target named `foo` in default-run packages
 
 "#]])
         .run();
@@ -2556,6 +2560,76 @@ fn doctest_dev_dep() {
         .build();
 
     p.cargo("test -v").run();
+}
+
+#[cargo_test]
+fn doctest_dep() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [dependencies]
+                b = { path = "b" }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                /// ```
+                /// foo::foo();
+                /// ```
+                pub fn foo() {
+                    b::bar();
+                }
+            "#,
+        )
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "pub fn bar() {}")
+        .build();
+
+    p.cargo("test -v").run();
+}
+
+#[cargo_test]
+fn doctest_dep_new_layout() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                edition = "2015"
+                authors = []
+
+                [dependencies]
+                b = { path = "b" }
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                /// ```
+                /// foo::foo();
+                /// ```
+                pub fn foo() {
+                    b::bar();
+                }
+            "#,
+        )
+        .file("b/Cargo.toml", &basic_manifest("b", "0.0.1"))
+        .file("b/src/lib.rs", "pub fn bar() {}")
+        .build();
+
+    p.cargo("-Zbuild-dir-new-layout test")
+        .masquerade_as_nightly_cargo(&["new build-dir layout"])
+        .run();
 }
 
 #[cargo_test]
@@ -2717,7 +2791,7 @@ fn cyclic_dev_dep_doc_test() {
         .build();
     p.cargo("test")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -2996,7 +3070,7 @@ fn selective_test_optional_dep() {
 
     p.cargo("test -v --no-run --features a -p a")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] a v0.0.1 ([ROOT]/foo/a)
 [RUNNING] `rustc [..] a/src/lib.rs [..]`
 [RUNNING] `rustc [..] a/src/lib.rs [..]`
@@ -3892,14 +3966,12 @@ fn cargo_test_env() {
     let cargo = format!(
         "{}[EXE]",
         cargo_exe()
-            .canonicalize()
-            .unwrap()
             .with_extension("")
             .to_str()
             .unwrap()
             .replace(rustc_host, "[HOST_TARGET]")
     );
-    p.cargo("test --lib -- --nocapture")
+    p.cargo("test --lib -- --no-capture")
         .with_stderr_contains(cargo)
         .with_stdout_data(str![[r#"
 ...
@@ -3909,22 +3981,20 @@ test env_test ... ok
         .run();
 
     // Check that `cargo test` propagates the environment's $CARGO
-    let rustc = cargo_util::paths::resolve_executable("rustc".as_ref())
-        .unwrap()
-        .canonicalize()
-        .unwrap();
-    let stderr_rustc = format!(
+    let cargo_exe = cargo_exe();
+    let other_cargo_path = p.root().join(cargo_exe.file_name().unwrap());
+    std::fs::hard_link(&cargo_exe, &other_cargo_path).unwrap();
+    let stderr_other_cargo = format!(
         "{}[EXE]",
-        rustc
+        other_cargo_path
             .with_extension("")
             .to_str()
             .unwrap()
-            .replace(rustc_host, "[HOST_TARGET]")
+            .replace(p.root().parent().unwrap().to_str().unwrap(), "[ROOT]")
     );
-    p.cargo("test --lib -- --nocapture")
-        // we use rustc since $CARGO is only used if it points to a path that exists
-        .env(cargo::CARGO_ENV, rustc)
-        .with_stderr_contains(stderr_rustc)
+    p.process(other_cargo_path)
+        .args(&["test", "--lib", "--", "--no-capture"])
+        .with_stderr_contains(stderr_other_cargo)
         .with_stdout_data(str![[r#"
 ...
 test env_test ... ok
@@ -4013,7 +4083,7 @@ fn cyclical_dep_with_missing_feature() {
     ... required by package `foo v0.1.0 ([ROOT]/foo)`
 versions that meet the requirements `*` are: 0.1.0
 
-the package `foo` depends on `foo`, with features: `missing` but `foo` does not have these features.
+package `foo` depends on `foo` with feature `missing` but `foo` does not have that feature.
 
 
 failed to select a version for `foo` which could resolve this conflict
@@ -4307,7 +4377,7 @@ fn test_hint_workspace_virtual() {
 
 "#]])
         .with_status(101)
-        .run()
+        .run();
 }
 
 #[cargo_test]
@@ -4452,6 +4522,47 @@ fn json_artifact_includes_executable_for_library_tests() {
             .is_json()
             .against_jsonlines(),
         )
+        .run();
+}
+
+#[cargo_test]
+fn json_diagnostic_includes_explanation() {
+    let p = project()
+        .file(
+            "src/main.rs",
+            "fn main() { const OH_NO: &'static mut usize = &mut 1; }",
+        )
+        .build();
+
+    p.cargo("check --message-format=json")
+        .with_stdout_data(
+            str![[r#"
+[
+  {
+    "manifest_path": "[ROOT]/foo/Cargo.toml",
+    "message": {
+      "$message_type": "diagnostic",
+      "children": "{...}",
+      "code": {
+        "code": "E0764",
+        "explanation": "{...}"
+      },
+      "level": "error",
+      "message": "{...}",
+      "rendered": "{...}",
+      "spans": "{...}"
+    },
+    "package_id": "{...}",
+    "reason": "compiler-message",
+    "target": "{...}"
+  },
+  "{...}"
+]
+"#]]
+            .is_json()
+            .against_jsonlines(),
+        )
+        .with_status(101)
         .run();
 }
 
@@ -4657,7 +4768,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
     p.cargo("test --lib --doc")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] Can't mix --doc with other target selecting options
+[ERROR] can't mix --doc with other target selecting options
 
 "#]])
         .run();
@@ -4680,7 +4791,7 @@ fn can_not_no_run_doc_tests() {
     p.cargo("test --doc --no-run")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] Can't skip running doc tests with --no-run
+[ERROR] can't skip running doc tests with --no-run
 
 "#]])
         .run();
@@ -4735,17 +4846,16 @@ fn test_dep_with_dev() {
     p.cargo("test -p bar")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ERROR] package `bar` cannot be tested because it requires dev-dependencies and is not a member of the workspace
 
 "#]])
         .run();
 }
 
-#[cargo_test(nightly, reason = "-Zdoctest-xcompile is unstable")]
+#[cargo_test]
 fn cargo_test_doctest_xcompile_ignores() {
-    // -Zdoctest-xcompile also enables --enable-per-target-ignores which
-    // allows the ignore-TARGET syntax.
+    // Check ignore-TARGET syntax.
     let p = project()
         .file("Cargo.toml", &basic_lib_manifest("foo"))
         .file(
@@ -4772,28 +4882,6 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         .run();
     #[cfg(target_arch = "x86_64")]
     p.cargo("test")
-        .with_status(101)
-        .with_stdout_data(str![[r#"
-...
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-...
-"#]],
-        )
-        .run();
-
-    #[cfg(not(target_arch = "x86_64"))]
-    p.cargo("test -Zdoctest-xcompile")
-        .masquerade_as_nightly_cargo(&["doctest-xcompile"])
-        .with_stdout_data(str![[r#"
-...
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-...
-"#]])
-        .run();
-
-    #[cfg(target_arch = "x86_64")]
-    p.cargo("test -Zdoctest-xcompile")
-        .masquerade_as_nightly_cargo(&["doctest-xcompile"])
         .with_stdout_data(str![[r#"
 ...
 test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
@@ -4802,51 +4890,9 @@ test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; fini
         .run();
 }
 
-#[cargo_test(nightly, reason = "-Zdoctest-xcompile is unstable")]
-fn cargo_test_doctest_xcompile() {
-    if !cross_compile::can_run_on_host() {
-        return;
-    }
-    let p = project()
-        .file("Cargo.toml", &basic_lib_manifest("foo"))
-        .file(
-            "src/lib.rs",
-            r#"
-
-            ///```
-            ///assert!(1 == 1);
-            ///```
-            pub fn foo() -> u8 {
-                4
-            }
-            "#,
-        )
-        .build();
-
-    p.cargo("build").run();
-    p.cargo(&format!("test --target {}", cross_compile::alternate()))
-        .with_stdout_data(str![[r#"
-...
-running 0 tests
-...
-"#]])
-        .run();
-    p.cargo(&format!(
-        "test --target {} -Zdoctest-xcompile",
-        cross_compile::alternate()
-    ))
-    .masquerade_as_nightly_cargo(&["doctest-xcompile"])
-    .with_stdout_data(str![[r#"
-...
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-...
-"#]])
-    .run();
-}
-
-#[cargo_test(nightly, reason = "-Zdoctest-xcompile is unstable")]
+#[cargo_test]
 fn cargo_test_doctest_xcompile_runner() {
-    if !cross_compile::can_run_on_host() {
+    if !cross_compile_can_run_on_host() {
         return;
     }
 
@@ -4913,27 +4959,23 @@ running 0 tests
 ...
 "#]])
         .run();
-    p.cargo(&format!(
-        "test --target {} -Zdoctest-xcompile",
-        cross_compile::alternate()
-    ))
-    .masquerade_as_nightly_cargo(&["doctest-xcompile"])
-    .with_stdout_data(str![[r#"
+    p.cargo(&format!("test --target {}", cross_compile::alternate()))
+        .with_stdout_data(str![[r#"
 ...
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
 ...
 "#]])
-    .with_stderr_data(str![[r#"
+        .with_stderr_data(str![[r#"
 ...
 this is a runner
 ...
 "#]])
-    .run();
+        .run();
 }
 
-#[cargo_test(nightly, reason = "-Zdoctest-xcompile is unstable")]
+#[cargo_test]
 fn cargo_test_doctest_xcompile_no_runner() {
-    if !cross_compile::can_run_on_host() {
+    if !cross_compile_can_run_on_host() {
         return;
     }
 
@@ -4963,17 +5005,13 @@ running 0 tests
 ...
 "#]])
         .run();
-    p.cargo(&format!(
-        "test --target {} -Zdoctest-xcompile",
-        cross_compile::alternate()
-    ))
-    .masquerade_as_nightly_cargo(&["doctest-xcompile"])
-    .with_stdout_data(str![[r#"
+    p.cargo(&format!("test --target {}", cross_compile::alternate()))
+        .with_stdout_data(str![[r#"
 ...
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
 ...
 "#]])
-    .run();
+        .run();
 }
 
 #[cargo_test(nightly, reason = "-Zpanic-abort-tests in rustc is unstable")]
@@ -5009,7 +5047,11 @@ fn panic_abort_tests() {
         .file("a/src/lib.rs", "pub fn foo() {}")
         .build();
 
-    p.cargo("test -Z panic-abort-tests -v")
+    // This uses -j1 because of a race condition. Otherwise it will build the
+    // two copies of `foo` in parallel, and which one is first is random. If
+    // `--test` is first, then the first line with `[..]` will match, and the
+    // second line with `--test` will fail.
+    p.cargo("test -Z panic-abort-tests -v -j1")
         .with_stderr_data(
             str![[r#"
 [RUNNING] `[..]--crate-name a [..]-C panic=abort[..]`
@@ -5094,7 +5136,7 @@ fn panic_abort_only_test() {
 
     p.cargo("test -Z panic-abort-tests -v")
         .with_stderr_data(str![[r#"
-[WARNING] `panic` setting is ignored for `test` profile
+[WARNING] Cargo.toml: `panic` setting is ignored for `test` profile
 ...
 "#]])
         .masquerade_as_nightly_cargo(&["panic-abort-tests"])
@@ -5163,6 +5205,29 @@ fn bin_env_for_test() {
         .file("src/bin/foo.rs", "fn main() {}")
         .file("src/bin/with-dash.rs", "fn main() {}")
         .file("src/bin/grussen.rs", "fn main() {}")
+        .file(
+            "src/lib.rs",
+            r#"
+            //! ```
+            //! assert_eq!(option_env!("CARGO_BIN_EXE_foo"), None);
+            //! assert_eq!(option_env!("CARGO_BIN_EXE_with-dash"), None);
+            //! assert_eq!(option_env!("CARGO_BIN_EXE_grüßen"), None);
+            //! assert_eq!(std::env::var("CARGO_BIN_EXE_foo").ok(), None);
+            //! assert_eq!(std::env::var("CARGO_BIN_EXE_with-dash").ok(), None);
+            //! assert_eq!(std::env::var("CARGO_BIN_EXE_grüßen").ok(), None);
+            //! ```
+
+            #[test]
+            fn no_bins() {
+                assert_eq!(option_env!("CARGO_BIN_EXE_foo"), None);
+                assert_eq!(option_env!("CARGO_BIN_EXE_with-dash"), None);
+                assert_eq!(option_env!("CARGO_BIN_EXE_grüßen"), None);
+                assert_eq!(std::env::var("CARGO_BIN_EXE_foo").ok(), None);
+                assert_eq!(std::env::var("CARGO_BIN_EXE_with-dash").ok(), None);
+                assert_eq!(std::env::var("CARGO_BIN_EXE_grüßen").ok(), None);
+            }
+"#,
+        )
         .build();
 
     let bin_path = |name| p.bin(name).to_string_lossy().replace("\\", "\\\\");
@@ -5174,6 +5239,9 @@ fn bin_env_for_test() {
                 assert_eq!(env!("CARGO_BIN_EXE_foo"), "<FOO_PATH>");
                 assert_eq!(env!("CARGO_BIN_EXE_with-dash"), "<WITH_DASH_PATH>");
                 assert_eq!(env!("CARGO_BIN_EXE_grüßen"), "<GRÜSSEN_PATH>");
+                assert_eq!(std::env::var("CARGO_BIN_EXE_foo").ok().as_deref(), Some("<FOO_PATH>"));
+                assert_eq!(std::env::var("CARGO_BIN_EXE_with-dash").ok().as_deref(), Some("<WITH_DASH_PATH>"));
+                assert_eq!(std::env::var("CARGO_BIN_EXE_grüßen").ok().as_deref(), Some("<GRÜSSEN_PATH>"));
             }
         "#
         .replace("<FOO_PATH>", &bin_path("foo"))
@@ -5181,8 +5249,8 @@ fn bin_env_for_test() {
         .replace("<GRÜSSEN_PATH>", &bin_path("grüßen")),
     );
 
-    p.cargo("test --test check_env").run();
-    p.cargo("check --test check_env").run();
+    p.cargo("test").run();
+    p.cargo("check --all-targets").run();
 }
 
 #[cargo_test]
@@ -5467,20 +5535,20 @@ this is a normal error
 
 Caused by:
   process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE]` ([EXIT_STATUS]: 4)
-[NOTE] test exited abnormally; to see the full output pass --nocapture to the harness.
+[NOTE] test exited abnormally; to see the full output pass --no-capture to the harness.
 
 "#]])
         .with_status(4)
         .run();
 
-    p.cargo("test --test t2 -- --nocapture")
+    p.cargo("test --test t2 -- --no-capture")
         .with_stderr_data(str![[r#"
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] tests/t2.rs (target/debug/deps/t2-[HASH][EXE])
 [ERROR] test failed, to rerun pass `--test t2`
 
 Caused by:
-  process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE] --nocapture` ([EXIT_STATUS]: 4)
+  process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE] --no-capture` ([EXIT_STATUS]: 4)
 
 "#]])
         .with_status(4)
@@ -5497,7 +5565,7 @@ Caused by:
 
 Caused by:
   process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE]` ([EXIT_STATUS]: 4)
-[NOTE] test exited abnormally; to see the full output pass --nocapture to the harness.
+[NOTE] test exited abnormally; to see the full output pass --no-capture to the harness.
 [ERROR] 2 targets failed:
     `--test t1`
     `--test t2`
@@ -5506,15 +5574,15 @@ Caused by:
         .with_status(101)
         .run();
 
-    p.cargo("test --no-fail-fast -- --nocapture")
+    p.cargo("test --no-fail-fast -- --no-capture")
         .with_stderr_does_not_contain(
-            "test exited abnormally; to see the full output pass --nocapture to the harness.",
+            "test exited abnormally; to see the full output pass --no-capture to the harness.",
         )
         .with_stderr_data(str![[r#"
 [..]thread [..]panicked [..] tests/t1.rs[..]
 [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 Caused by:
-  process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE] --nocapture` ([EXIT_STATUS]: 4)
+  process didn't exit successfully: `[ROOT]/foo/target/debug/deps/t2-[HASH][EXE] --no-capture` ([EXIT_STATUS]: 4)
 ...
 "#]].unordered())
         .with_status(101)
@@ -5582,6 +5650,6 @@ fn cargo_test_set_out_dir_env_var() {
         .build();
 
     p.cargo("test").run();
-    p.cargo("test --package foo --test case -- tests::test_add --exact --nocapture")
+    p.cargo("test --package foo --test case -- tests::test_add --exact --no-capture")
         .run();
 }

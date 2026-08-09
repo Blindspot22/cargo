@@ -1,20 +1,23 @@
-use anyhow::{anyhow, Context as _};
-use cargo::core::{features, CliUnstable};
-use cargo::util::context::TermConfig;
-use cargo::{drop_print, drop_println, CargoResult};
+use crate::util::data_structures::HashMap;
+use anyhow::{Context as _, anyhow};
+use cargo::context::TermConfig;
+use cargo::workspace::{CliUnstable, features};
+use cargo::{CargoResult, drop_print, drop_println};
+use cargo_util_terminal::report::Level;
 use clap::builder::UnknownArgumentValueParser;
 use itertools::Itertools;
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt::Write;
 
 use super::commands;
 use super::list_commands;
+use super::third_party_subcommands;
+use super::user_defined_aliases;
 use crate::command_prelude::*;
 use crate::util::is_rustup;
-use cargo::core::shell::ColorChoice;
 use cargo::util::style;
+use cargo_util_terminal::ColorChoice;
 
 #[tracing::instrument(skip_all)]
 pub fn main(gctx: &mut GlobalContext) -> CliResult {
@@ -68,8 +71,8 @@ pub fn main(gctx: &mut GlobalContext) -> CliResult {
     } else if let Some(code) = expanded_args.get_one::<String>("explain") {
         // Don't let config errors get in the way of parsing arguments
         let _ = configure_gctx(gctx, &expanded_args, None, global_args, None);
-        let mut procss = gctx.load_global_rustc(None)?.process();
-        procss.arg("--explain").arg(code).exec()?;
+        let mut process = gctx.load_global_rustc(None)?.process();
+        process.arg("--explain").arg(code).exec()?;
     } else if expanded_args.flag("list") {
         // Don't let config errors get in the way of parsing arguments
         let _ = configure_gctx(gctx, &expanded_args, None, global_args, None);
@@ -91,7 +94,7 @@ pub fn main(gctx: &mut GlobalContext) -> CliResult {
             global_args,
             Some(&exec),
         )?;
-        super::init_git(gctx);
+        super::init_git();
 
         exec.exec(gctx, subcommand_args)?;
     }
@@ -150,7 +153,7 @@ fn print_list(gctx: &GlobalContext, is_verbose: bool) {
     // to their description, for the help page. Reserved for external
     // subcommands that are core within the rust ecosystem (esp ones that
     // might become internal in the future).
-    let known_external_command_descriptions = HashMap::from([
+    let known_external_command_descriptions = HashMap::from_iter([
         (
             "clippy",
             "Checks a package to catch common mistakes and improve your Rust code.",
@@ -162,7 +165,7 @@ fn print_list(gctx: &GlobalContext, is_verbose: bool) {
     ]);
     drop_println!(
         gctx,
-        color_print::cstr!("<green,bold>Installed Commands:</>")
+        color_print::cstr!("<bright-green,bold>Installed Commands:</>")
     );
     for (name, command) in list_commands(gctx) {
         let known_external_desc = known_external_command_descriptions.get(name.as_str());
@@ -316,26 +319,40 @@ To pass the arguments to the subcommand, remove `--`",
                 // a hard error.
                 if super::builtin_aliases_execs(cmd).is_none() {
                     if let Some(path) = super::find_external_subcommand(gctx, cmd) {
-                        gctx.shell().warn(format!(
-                        "\
-user-defined alias `{}` is shadowing an external subcommand found at: `{}`
-This was previously accepted but is being phased out; it will become a hard error in a future release.
-For more information, see issue #10049 <https://github.com/rust-lang/cargo/issues/10049>.",
-                        cmd,
-                        path.display(),
-                    ))?;
+                        gctx.shell().print_report(
+                            &[
+                                Level::WARNING.secondary_title(format!(
+                                    "user-defined alias `{}` is shadowing an external subcommand found at `{}`",
+                                    cmd,
+                                    path.display()
+                                )).element(
+                                    Level::NOTE.message(
+                                        "this was previously accepted but will become a hard error in the future; \
+                                        see <https://github.com/rust-lang/cargo/issues/10049>"
+                                    )
+                                )
+                            ],
+                            false,
+                        )?;
                     }
                 }
                 if commands::run::is_manifest_command(cmd) {
                     if gctx.cli_unstable().script {
                         return Ok((args, GlobalArgs::default()));
                     } else {
-                        gctx.shell().warn(format_args!(
-                            "\
-user-defined alias `{cmd}` has the appearance of a manifest-command
-This was previously accepted but will be phased out when `-Zscript` is stabilized.
-For more information, see issue #12207 <https://github.com/rust-lang/cargo/issues/12207>."
-                        ))?;
+                        gctx.shell().print_report(
+                            &[
+                                Level::WARNING.secondary_title(
+                                    format!("user-defined alias `{cmd}` has the appearance of a manifest-command")
+                                ).element(
+                                    Level::NOTE.message(
+                                        "this was previously accepted but will be phased out when `-Zscript` is stabilized; \
+                                        see <https://github.com/rust-lang/cargo/issues/12207>"
+                                    )
+                                )
+                            ],
+                            false
+                        )?;
                     }
                 }
 
@@ -475,12 +492,20 @@ impl Exec {
             Self::Manifest(cmd) => {
                 let ext_path = super::find_external_subcommand(gctx, &cmd);
                 if !gctx.cli_unstable().script && ext_path.is_some() {
-                    gctx.shell().warn(format_args!(
-                        "\
-external subcommand `{cmd}` has the appearance of a manifest-command
-This was previously accepted but will be phased out when `-Zscript` is stabilized.
-For more information, see issue #12207 <https://github.com/rust-lang/cargo/issues/12207>.",
-                    ))?;
+                    gctx.shell().print_report(
+                        &[
+                            Level::WARNING.secondary_title(
+                                format!("external subcommand `{cmd}` has the appearance of a manifest-command")
+                            ).element(
+                                Level::NOTE.message(
+                                    "this was previously accepted but will be phased out when `-Zscript` is stabilized; \
+                                    see <https://github.com/rust-lang/cargo/issues/12207>"
+                                )
+                            )
+                        ],
+                        false
+                    )?;
+
                     Self::External(cmd).exec(gctx, subcommand_args)
                 } else {
                     let ext_args: Vec<OsString> = subcommand_args
@@ -555,9 +580,13 @@ pub fn cli(gctx: &GlobalContext) -> Command {
     };
 
     let usage = if is_rustup() {
-        color_print::cstr!("<cyan,bold>cargo</> <cyan>[+toolchain] [OPTIONS] [COMMAND]</>\n       <cyan,bold>cargo</> <cyan>[+toolchain] [OPTIONS]</> <cyan,bold>-Zscript</> <cyan><<MANIFEST_RS>> [ARGS]...</>")
+        color_print::cstr!(
+            "<bright-cyan,bold>cargo</> <cyan>[+toolchain] [OPTIONS] [COMMAND]</>\n       <bright-cyan,bold>cargo</> <cyan>[+toolchain] [OPTIONS]</> <bright-cyan,bold>-Zscript</> <cyan><<MANIFEST_RS>> [ARGS]...</>"
+        )
     } else {
-        color_print::cstr!("<cyan,bold>cargo</> <cyan>[OPTIONS] [COMMAND]</>\n       <cyan,bold>cargo</> <cyan>[OPTIONS]</> <cyan,bold>-Zscript</> <cyan><<MANIFEST_RS>> [ARGS]...</>")
+        color_print::cstr!(
+            "<bright-cyan,bold>cargo</> <cyan>[OPTIONS] [COMMAND]</>\n       <bright-cyan,bold>cargo</> <cyan>[OPTIONS]</> <bright-cyan,bold>-Zscript</> <cyan><<MANIFEST_RS>> [ARGS]...</>"
+        )
     };
 
     let styles = {
@@ -587,31 +616,31 @@ pub fn cli(gctx: &GlobalContext) -> Command {
             "\
 Rust's package manager
 
-<green,bold>Usage:</> {usage}
+<bright-green,bold>Usage:</> {usage}
 
-<green,bold>Options:</>
+<bright-green,bold>Options:</>
 {options}
 
-<green,bold>Commands:</>
-    <cyan,bold>build</>, <cyan,bold>b</>    Compile the current package
-    <cyan,bold>check</>, <cyan,bold>c</>    Analyze the current package and report errors, but don't build object files
-    <cyan,bold>clean</>       Remove the target directory
-    <cyan,bold>doc</>, <cyan,bold>d</>      Build this package's and its dependencies' documentation
-    <cyan,bold>new</>         Create a new cargo package
-    <cyan,bold>init</>        Create a new cargo package in an existing directory
-    <cyan,bold>add</>         Add dependencies to a manifest file
-    <cyan,bold>remove</>      Remove dependencies from a manifest file
-    <cyan,bold>run</>, <cyan,bold>r</>      Run a binary or example of the local package
-    <cyan,bold>test</>, <cyan,bold>t</>     Run the tests
-    <cyan,bold>bench</>       Run the benchmarks
-    <cyan,bold>update</>      Update dependencies listed in Cargo.lock
-    <cyan,bold>search</>      Search registry for crates
-    <cyan,bold>publish</>     Package and upload this package to the registry
-    <cyan,bold>install</>     Install a Rust binary
-    <cyan,bold>uninstall</>   Uninstall a Rust binary
-    <cyan>...</>         See all commands with <cyan,bold>--list</>
+<bright-green,bold>Commands:</>
+    <bright-cyan,bold>build</>, <bright-cyan,bold>b</>    Compile the current package
+    <bright-cyan,bold>check</>, <bright-cyan,bold>c</>    Analyze the current package and report errors, but don't build object files
+    <bright-cyan,bold>clean</>       Remove the target directory
+    <bright-cyan,bold>doc</>, <bright-cyan,bold>d</>      Build this package's and its dependencies' documentation
+    <bright-cyan,bold>new</>         Create a new cargo package
+    <bright-cyan,bold>init</>        Create a new cargo package in an existing directory
+    <bright-cyan,bold>add</>         Add dependencies to a manifest file
+    <bright-cyan,bold>remove</>      Remove dependencies from a manifest file
+    <bright-cyan,bold>run</>, <bright-cyan,bold>r</>      Run a binary or example of the local package
+    <bright-cyan,bold>test</>, <bright-cyan,bold>t</>     Run the tests
+    <bright-cyan,bold>bench</>       Run the benchmarks
+    <bright-cyan,bold>update</>      Update dependencies listed in Cargo.lock
+    <bright-cyan,bold>search</>      Search registry for crates
+    <bright-cyan,bold>publish</>     Package and upload this package to the registry
+    <bright-cyan,bold>install</>     Install a Rust binary
+    <bright-cyan,bold>uninstall</>   Uninstall a Rust binary
+    <cyan>...</>         See all commands with <bright-cyan,bold>--list</>
 
-See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a specific command.\n",
+See '<bright-cyan,bold>cargo help</> <cyan><<command>></>' for more information on a specific command.\n",
         ))
         .arg(flag("version", "Print version info and exit").short('V'))
         .arg(flag("list", "List installed commands"))
@@ -633,9 +662,11 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
         )
         .arg(flag("quiet", "Do not print cargo log messages").short('q').global(true))
         .arg(
-            opt("color", "Coloring: auto, always, never")
+            opt("color", "Coloring")
                 .value_name("WHEN")
-                .global(true),
+                .global(true)
+                .value_parser(["auto", "always", "never"])
+                .ignore_case(true),
         )
         .arg(
             Arg::new("directory")
@@ -668,7 +699,10 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
             .action(ArgAction::SetTrue)
             .global(true)
             .hide(true))
-        .arg(multi_opt("config", "KEY=VALUE|PATH", "Override a configuration value").global(true))
+        .arg(multi_opt("config", "KEY=VALUE|PATH", "Override a configuration value").add(clap_complete::engine::ArgValueCompleter::new(
+                    clap_complete::engine::PathCompleter::any()
+                        .filter(|path| path.is_file() && path.extension() == Some(OsStr::new("toml"))),
+                )).global(true))
         // Better suggestion for the unsupported lowercase unstable feature flag.
         .arg( Arg::new("unsupported-lowercase-unstable-feature-flag")
             .help("")
@@ -691,7 +725,65 @@ See '<cyan,bold>cargo help</> <cyan><<command>></>' for more information on a sp
                 }))
             }).collect()
         })))
+        .add(clap_complete::engine::SubcommandCandidates::new(move || {
+            let mut candidates = get_toolchains_from_rustup()
+                .into_iter()
+                .map(|t| clap_complete::CompletionCandidate::new(t))
+                .collect::<Vec<_>>();
+            if let Ok(gctx) = new_gctx_for_completions() {
+                candidates.extend(get_command_candidates(&gctx));
+            }
+            candidates
+        }))
         .subcommands(commands::builtin())
+}
+
+fn get_toolchains_from_rustup() -> Vec<String> {
+    let Ok(output) = std::process::Command::new("rustup")
+        .arg("toolchain")
+        .arg("list")
+        .arg("-q")
+        .output()
+    else {
+        return vec![];
+    };
+
+    if !output.status.success() {
+        return vec![];
+    }
+
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return vec![];
+    };
+
+    stdout.lines().map(|line| format!("+{}", line)).collect()
+}
+
+fn get_command_candidates(gctx: &GlobalContext) -> Vec<clap_complete::CompletionCandidate> {
+    let mut commands = user_defined_aliases(gctx);
+    commands.extend(third_party_subcommands(gctx));
+    commands
+        .iter()
+        .map(|(name, cmd_info)| {
+            let help_text = match cmd_info {
+                CommandInfo::Alias { target } => {
+                    let cmd_str = target
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("alias for {}", cmd_str)
+                }
+                CommandInfo::BuiltIn { .. } => {
+                    unreachable!("BuiltIn command shouldn't appear in alias map")
+                }
+                CommandInfo::External { path } => {
+                    format!("from {}", path.display())
+                }
+            };
+            clap_complete::CompletionCandidate::new(name.clone()).help(Some(help_text.into()))
+        })
+        .collect()
 }
 
 #[test]

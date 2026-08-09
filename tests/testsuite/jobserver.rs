@@ -5,11 +5,11 @@ use std::net::TcpListener;
 use std::process::Command;
 use std::thread;
 
+use crate::prelude::*;
+use crate::utils::cargo_exe;
 use cargo_test_support::basic_bin_manifest;
-use cargo_test_support::cargo_exe;
 use cargo_test_support::install::assert_has_installed_exe;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::{project, rustc_host, str};
 use cargo_util::is_ci;
 
@@ -409,4 +409,23 @@ all:
 
 "#]])
         .run();
+}
+
+#[cargo_test]
+fn jobserver_invalid_fd_warning() {
+    let p = project()
+        .file("build.rs", EXE_CONTENT)
+        .file("src/lib.rs", "")
+        .build();
+
+    // Pick some very high FDs that should be unused.
+    p.cargo("check")
+    .env("MAKEFLAGS", "--jobserver-auth=200001,200002")
+        .with_stderr_data(str![[r#"
+[WARNING] failed to connect to jobserver from environment variable `MAKEFLAGS="--jobserver-auth=200001,200002"`: [..]
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+    .run();
 }

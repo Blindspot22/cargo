@@ -6,14 +6,14 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cargo::core::PackageId;
+use crate::prelude::*;
+use crate::utils::cargo_process;
+use crate::utils::cross_compile::disabled as cross_compile_disabled;
+use cargo::workspace::PackageId;
 use cargo_test_support::install::exe;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, Package};
-use cargo_test_support::{
-    basic_manifest, cargo_process, cross_compile, execs, git, process, project, str, Execs,
-};
+use cargo_test_support::{Execs, basic_manifest, cross_compile, execs, git, process, project, str};
 
 fn pkg_maybe_yanked(name: &str, vers: &str, yanked: bool) {
     Package::new(name, vers)
@@ -468,7 +468,7 @@ fn change_profile_rebuilds() {
 
 #[cargo_test]
 fn change_target_rebuilds() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
     pkg("foo", "1.0.0");
@@ -865,6 +865,8 @@ fn deletes_orphaned() {
     p.cargo("install --path . --bins --examples")
         .with_stderr_data(str![[r#"
 [INSTALLING] foo v0.2.0 ([ROOT]/foo)
+[WARNING] Cargo.toml: `package.edition` is unspecified, defaulting to `2015` while the latest is `2024`
+[WARNING] `foo` (manifest) generated 1 warning
 [COMPILING] foo v0.2.0 ([ROOT]/foo)
 [FINISHED] `release` profile [optimized] target(s) in [ELAPSED]s
 [INSTALLING] [ROOT]/home/.cargo/bin/ex2[EXE]

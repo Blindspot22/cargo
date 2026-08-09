@@ -39,11 +39,5 @@ def main():
                 mapped = "https://doc.rust-lang.org/cargo/reference/{}".format(name)
             f.write(TEMPLATE.format(name=name, mapped=mapped))
 
-    # WARN: The CNAME file is for GitHub to redirect requests to the custom domain.
-    # Missing this may entail security hazard and domain takeover.
-    # See <https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site#securing-your-custom-domain>
-    with open('CNAME', 'w') as f:
-        f.write('doc.crates.io')
-
 if __name__ == '__main__':
     main()

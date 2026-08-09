@@ -1,9 +1,9 @@
+use crate::prelude::*;
+use cargo_test_support::Project;
 use cargo_test_support::compare::assert_ui;
 use cargo_test_support::current_dir;
 use cargo_test_support::file;
-use cargo_test_support::prelude::*;
 use cargo_test_support::str;
-use cargo_test_support::Project;
 
 #[cargo_test]
 fn case() {
@@ -20,7 +20,7 @@ fn case() {
             )
             .file("src/lib.rs", "")
     });
-    let find_head = || (git_repo.head().unwrap().peel_to_commit().unwrap());
+    let find_head = || git_repo.head().unwrap().peel_to_commit().unwrap();
     let head = find_head().id().to_string();
     let git_url = git_dep.url().to_string();
 

@@ -10,7 +10,7 @@
 use proc_macro::*;
 use std::path::Path;
 use std::process::Command;
-use std::sync::Once;
+use std::sync::LazyLock;
 
 /// Replacement for `#[test]`
 ///
@@ -34,10 +34,13 @@ use std::sync::Once;
 ///   This is useful for tests that use unstable options in `rustc` or `rustdoc`.
 ///   These tests are run in Cargo's CI, but are disabled in rust-lang/rust's CI due to the difficulty of updating both repos simultaneously.
 ///   A `reason` field is required to explain why it is nightly-only.
-/// * `requires_<cmd>` --- This indicates a command that is required to be installed to be run.
-///   For example, `requires_rustfmt` means the test will only run if the executable `rustfmt` is installed.
-///   These tests are *always* run on CI.
+/// * `requires = "<cmd>"` --- This indicates a command that is required to be installed to be run.
+///   For example, `requires = "rustfmt"` means the test will only run if the executable `rustfmt` is installed.
+///   These tests are run in Cargo's CI when CARGO_TEST_REQUIRE_EXTERNAL_TOOLS is set.
+///   Other environments, including rust-lang/rust's CI, ignore the test when the command is unavailable.
 ///   This is mainly used to avoid requiring contributors from having every dependency installed.
+/// * `requires_host_split_debuginfo = "<value>"` --- This indicates a `-Csplit-debuginfo` value
+///   that is required to be supported by the host `rustc`.
 /// * `build_std_real` --- This is a "real" `-Zbuild-std` test (in the `build_std` integration test).
 ///   This only runs on nightly, and only if the environment variable `CARGO_RUN_BUILD_STD_TESTS` is set (these tests on run on Linux).
 /// * `build_std_mock` --- This is a "mock" `-Zbuild-std` test (which uses a mock standard library).
@@ -133,9 +136,36 @@ pub fn cargo_test(attr: TokenStream, item: TokenStream) -> TokenStream {
                     "rustup or stable toolchain not installed"
                 );
             }
-            s if s.starts_with("requires_") => {
+            s if s.starts_with("requires=") => {
                 let command = &s[9..];
+                let Ok(literal) = command.parse::<Literal>() else {
+                    panic!("expect a string literal, found: {command}");
+                };
+                let literal = literal.to_string();
+                let Some(command) = literal
+                    .strip_prefix('"')
+                    .and_then(|lit| lit.strip_suffix('"'))
+                else {
+                    panic!("expect a quoted string literal, found: {literal}");
+                };
                 set_ignore!(!has_command(command), "{command} not installed");
+            }
+            s if s.starts_with("requires_host_split_debuginfo=") => {
+                let split_debuginfo = &s[30..];
+                let Ok(literal) = split_debuginfo.parse::<Literal>() else {
+                    panic!("expect a string literal, found: {split_debuginfo}");
+                };
+                let literal = literal.to_string();
+                let Some(split_debuginfo) = literal
+                    .strip_prefix('"')
+                    .and_then(|lit| lit.strip_suffix('"'))
+                else {
+                    panic!("expect a quoted string literal, found: {literal}");
+                };
+                set_ignore!(
+                    !host_supports_split_debuginfo(split_debuginfo),
+                    "host rustc does not support -Csplit-debuginfo={split_debuginfo}"
+                );
             }
             s if s.starts_with(">=1.") => {
                 requires_reason = true;
@@ -190,6 +220,9 @@ pub fn cargo_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         add_attr(&mut ret, "ignore", reason);
     }
 
+    let mut test_name = None;
+    let mut num = 0;
+
     // Find where the function body starts, and add the boilerplate at the start.
     for token in item {
         let group = match token {
@@ -201,18 +234,35 @@ pub fn cargo_test(attr: TokenStream, item: TokenStream) -> TokenStream {
                     continue;
                 }
             }
+            TokenTree::Ident(i) => {
+                // The first time through it will be `fn` the second time is the
+                // name of the test.
+                if test_name.is_none() && num == 1 {
+                    test_name = Some(i.to_string())
+                } else {
+                    num += 1;
+                }
+                ret.extend(Some(TokenTree::Ident(i)));
+                continue;
+            }
             other => {
                 ret.extend(Some(other));
                 continue;
             }
         };
 
-        let mut new_body = to_token_stream(
-            r#"let _test_guard = {
-                let tmp_dir = option_env!("CARGO_TARGET_TMPDIR");
-                cargo_test_support::paths::init_root(tmp_dir)
-            };"#,
-        );
+        let name = &test_name
+            .clone()
+            .map(|n| n.split("::").next().unwrap().to_string())
+            .unwrap();
+
+        let mut new_body = to_token_stream(&format!(
+            r#"let _test_guard = {{
+                let tmp_dir = env!("CARGO_TARGET_TMPDIR");
+                let test_dir = cargo_test_support::paths::test_dir(std::file!(), "{name}");
+                cargo_test_support::paths::init_root(tmp_dir, test_dir)
+            }};"#
+        ));
 
         new_body.extend(group.stream());
         ret.extend(Some(TokenTree::from(Group::new(
@@ -244,23 +294,78 @@ fn to_token_stream(code: &str) -> TokenStream {
     code.parse().unwrap()
 }
 
-static mut VERSION: (u32, bool) = (0, false);
+static VERSION: std::sync::LazyLock<(u32, bool)> = LazyLock::new(|| {
+    let output = Command::new("rustc")
+        .arg("-V")
+        .output()
+        .expect("rustc should run");
+
+    let exit_code = output.status.code();
+
+    if exit_code != Some(0) {
+        let stdout = std::str::from_utf8(&output.stdout).unwrap_or("<invalid utf8>");
+        let stderr = std::str::from_utf8(&output.stderr).unwrap_or("<invalid utf8>");
+        // On Windows, exit code `0xC0000017` is not very well documented but appears to
+        // usually happen when a command length exceeds the windows limit.
+        // Since we are just running `rustc -V` it likely that the PATH got too long.
+        // This can happen when Cargo's tests are executed from rustc bootstrap.
+        let extra = if exit_code.map(|c| c as u32) == Some(0xC0000017) {
+            "This likely indicates that PATH is too large for Windows.\n"
+        } else {
+            ""
+        };
+        panic!(
+            "'rustc -V' exited with non-zero exit code: {exit_code:?}\n{extra}stdout: {stdout}\nstderr: {stderr}",
+        );
+    }
+
+    let stdout = std::str::from_utf8(&output.stdout).expect("utf8");
+    let vers = stdout
+        .split_whitespace()
+        .skip(1)
+        .next()
+        .expect("version should have contain at least one space");
+    let is_nightly = option_env!("CARGO_TEST_DISABLE_NIGHTLY").is_none()
+        && (vers.contains("-nightly") || vers.contains("-dev"));
+    let minor = vers
+        .split('.')
+        .skip(1)
+        .next()
+        .expect("malformed rustc version (not semver)")
+        .parse()
+        .expect("malformed rustc version (minor version was not u32)");
+    (minor, is_nightly)
+});
 
 fn version() -> (u32, bool) {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
+    LazyLock::force(&VERSION).clone()
+}
+
+fn host_supports_split_debuginfo(split_debuginfo: &str) -> bool {
+    static SPLIT_DEBUGINFO: LazyLock<Vec<String>> = LazyLock::new(|| {
         let output = Command::new("rustc")
-            .arg("-V")
+            .arg("--print=split-debuginfo")
             .output()
             .expect("rustc should run");
+
+        let exit_code = output.status.code();
+        if exit_code != Some(0) {
+            let stdout = std::str::from_utf8(&output.stdout).unwrap_or("<invalid utf8>");
+            let stderr = std::str::from_utf8(&output.stderr).unwrap_or("<invalid utf8>");
+            panic!(
+                "'rustc --print=split-debuginfo' exited with non-zero exit code: {exit_code:?}\n\
+                stdout: {stdout}\n\
+                stderr: {stderr}",
+            );
+        }
+
         let stdout = std::str::from_utf8(&output.stdout).expect("utf8");
-        let vers = stdout.split_whitespace().skip(1).next().unwrap();
-        let is_nightly = option_env!("CARGO_TEST_DISABLE_NIGHTLY").is_none()
-            && (vers.contains("-nightly") || vers.contains("-dev"));
-        let minor = vers.split('.').skip(1).next().unwrap().parse().unwrap();
-        unsafe { VERSION = (minor, is_nightly) }
+        stdout.lines().map(str::to_owned).collect()
     });
-    unsafe { VERSION }
+
+    SPLIT_DEBUGINFO
+        .iter()
+        .any(|supported| supported == split_debuginfo)
 }
 
 fn check_command(command_path: &Path, args: &[&str]) -> bool {
@@ -270,11 +375,7 @@ fn check_command(command_path: &Path, args: &[&str]) -> bool {
     let output = match command.output() {
         Ok(output) => output,
         Err(e) => {
-            // * hg is not installed on GitHub macOS or certain constrained
-            //   environments like Docker. Consider installing it if Cargo
-            //   gains more hg support, but otherwise it isn't critical.
-            // * lldb is not pre-installed on Ubuntu and Windows, so skip.
-            if is_ci() && !matches!(command_name.as_str(), "hg" | "lldb") {
+            if is_ci() {
                 panic!("expected command `{command_name}` to be somewhere in PATH: {e}",);
             }
             return false;
@@ -294,19 +395,49 @@ fn check_command(command_path: &Path, args: &[&str]) -> bool {
 }
 
 fn has_command(command: &str) -> bool {
-    check_command(Path::new(command), &["--version"])
+    use std::env::consts::EXE_EXTENSION;
+    // ALLOWED: For testing cargo itself only.
+    #[allow(clippy::disallowed_methods)]
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let found = std::env::split_paths(&paths)
+        .flat_map(|path| {
+            let candidate = path.join(&command);
+            let with_exe = if EXE_EXTENSION.is_empty() {
+                None
+            } else {
+                Some(candidate.with_extension(EXE_EXTENSION))
+            };
+            std::iter::once(candidate).chain(with_exe)
+        })
+        .find(|p| is_executable(p))
+        .is_some();
+    // * hg is not installed on GitHub macOS or certain constrained
+    //   environments like Docker. Consider installing it if Cargo
+    //   gains more hg support, but otherwise it isn't critical.
+    if !found && requires_external_tools() && command != "hg" {
+        panic!("expected command `{command}` to be somewhere in PATH");
+    }
+    found
+}
+
+#[cfg(unix)]
+fn is_executable<P: AsRef<Path>>(path: P) -> bool {
+    use std::os::unix::prelude::*;
+    std::fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_executable<P: AsRef<Path>>(path: P) -> bool {
+    path.as_ref().is_file()
 }
 
 fn has_rustup_stable() -> bool {
     if option_env!("CARGO_TEST_DISABLE_NIGHTLY").is_some() {
         // This cannot run on rust-lang/rust CI due to the lack of rustup.
-        return false;
-    }
-    if cfg!(windows) && !is_ci() && option_env!("RUSTUP_WINDOWS_PATH_ADD_BIN").is_none() {
-        // There is an issue with rustup that doesn't allow recursive cargo
-        // invocations. Disable this on developer machines if the environment
-        // variable is not enabled. This can be removed once
-        // https://github.com/rust-lang/rustup/issues/3036 is resolved.
         return false;
     }
     // Cargo mucks with PATH on Windows, adding sysroot host libdir, which is
@@ -327,4 +458,9 @@ fn is_ci() -> bool {
     // `tracked_env` will handle changes, but not require rebuilding the macro
     // itself like option_env does.
     option_env!("CI").is_some() || option_env!("TF_BUILD").is_some()
+}
+
+/// Whether to enforce external tools (`requires=<tool>`) availability.
+fn requires_external_tools() -> bool {
+    option_env!("CARGO_TEST_REQUIRE_EXTERNAL_TOOLS").is_some()
 }

@@ -1,11 +1,13 @@
-use cargo::core::dependency::DepKind;
-use cargo::core::Dependency;
 use cargo::util::GlobalContext;
+use cargo::workspace::Dependency;
+use cargo::workspace::dependency::DepKind;
+use snapbox::assert_data_eq;
+use snapbox::str;
 
 use resolver_tests::{
     helpers::{
-        assert_contains, assert_same, dep, dep_kind, dep_loc, dep_req, loc_names, names, pkg,
-        pkg_dep, pkg_dep_with, pkg_id, pkg_loc, registry, ToDep, ToPkgId,
+        ToDep, ToPkgId, assert_contains, assert_same, dep, dep_kind, dep_loc, dep_req, loc_names,
+        names, pkg, pkg_dep, pkg_dep_with, pkg_id, pkg_loc, registry,
     },
     pkg, resolve, resolve_with_global_context,
 };
@@ -741,8 +743,8 @@ fn incomplete_information_skipping() {
     let new_reg = registry(
         input
             .iter()
+            .filter(|&x| package_to_yank != x.package_id())
             .cloned()
-            .filter(|x| package_to_yank != x.package_id())
             .collect(),
     );
     assert_eq!(input.len(), new_reg.len() + 1);
@@ -810,8 +812,8 @@ fn incomplete_information_skipping_2() {
     let new_reg = registry(
         input
             .iter()
+            .filter(|&x| package_to_yank != x.package_id())
             .cloned()
-            .filter(|x| package_to_yank != x.package_id())
             .collect(),
     );
     assert_eq!(input.len(), new_reg.len() + 1);
@@ -860,8 +862,8 @@ fn incomplete_information_skipping_3() {
     let new_reg = registry(
         input
             .iter()
+            .filter(|&x| package_to_yank != x.package_id())
             .cloned()
-            .filter(|x| package_to_yank != x.package_id())
             .collect(),
     );
     assert_eq!(input.len(), new_reg.len() + 1);
@@ -991,12 +993,15 @@ fn cyclic_good_error_message() {
     let reg = registry(input);
     let error = resolve(vec![dep("A"), dep("B")], &reg).unwrap_err();
     println!("{}", error);
-    assert_eq!("\
+    assert_data_eq!(
+        error.to_string(),
+        str![[r#"
 cyclic package dependency: package `A v0.0.0 (registry `https://example.com/`)` depends on itself. Cycle:
 package `A v0.0.0 (registry `https://example.com/`)`
-    ... which satisfies dependency `A = \"*\"` of package `C v0.0.0 (registry `https://example.com/`)`
-    ... which satisfies dependency `C = \"*\"` of package `A v0.0.0 (registry `https://example.com/`)`\
-", error.to_string());
+    ... which satisfies dependency `A = "*"` of package `C v0.0.0 (registry `https://example.com/`)`
+    ... which satisfies dependency `C = "*"` of package `A v0.0.0 (registry `https://example.com/`)`
+"#]]
+    );
 }
 
 #[test]
@@ -1012,22 +1017,22 @@ fn shortest_path_in_error_message() {
     ];
     let error = resolve(vec![dep("A")], &registry(input)).unwrap_err();
     println!("{}", error);
-    assert_eq!(
-        "\
+    assert_data_eq!(
+        error.to_string(),
+        str![[r#"
 failed to select a version for `F`.
     ... required by package `A v1.0.0 (registry `https://example.com/`)`
-    ... which satisfies dependency `A = \"*\"` of package `root v1.0.0 (registry `https://example.com/`)`
+    ... which satisfies dependency `A = "*"` of package `root v1.0.0 (registry `https://example.com/`)`
 versions that meet the requirements `<=0.1.1` are: 0.1.1, 0.1.0
 
-all possible versions conflict with previously selected packages.
+all possible versions conflict with previously selected packages
 
   previously selected package `F v0.1.2 (registry `https://example.com/`)`
-    ... which satisfies dependency `F = \"^0.1.2\"` of package `E v1.0.0 (registry `https://example.com/`)`
-    ... which satisfies dependency `E = \"*\"` of package `A v1.0.0 (registry `https://example.com/`)`
-    ... which satisfies dependency `A = \"*\"` of package `root v1.0.0 (registry `https://example.com/`)`
+    ... which satisfies dependency `F = "^0.1.2"` of package `E v1.0.0 (registry `https://example.com/`)`
+    ... which satisfies dependency `E = "*"` of package `A v1.0.0 (registry `https://example.com/`)`
+    ... which satisfies dependency `A = "*"` of package `root v1.0.0 (registry `https://example.com/`)`
 
-failed to select a version for `F` which could resolve this conflict\
-    ",
-        error.to_string()
+failed to select a version for `F` which could resolve this conflict
+"#]]
     );
 }

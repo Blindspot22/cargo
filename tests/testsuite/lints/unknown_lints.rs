@@ -1,4 +1,4 @@
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::str;
 
@@ -15,24 +15,25 @@ edition = "2015"
 authors = []
 
 [lints.cargo]
-this-lint-does-not-exist = "warn"
+default = { level = "allow", priority = -1 }
+unknown_lints = "warn"
+this_lint_does_not_exist = "warn"
 "#,
         )
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("check -Zcargo-lints")
+    p.cargo("fetch -Zcargo-lints")
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
-[WARNING] unknown lint: `this-lint-does-not-exist`
- --> Cargo.toml:9:1
-  |
-9 | this-lint-does-not-exist = "warn"
-  | ^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = [NOTE] `cargo::unknown_lints` is set to `warn` by default
-[CHECKING] foo v0.0.1 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[WARNING] unknown lint: `this_lint_does_not_exist`
+  --> Cargo.toml:11:1
+   |
+11 | this_lint_does_not_exist = "warn"
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = [NOTE] `cargo::unknown_lints` is set to `warn` in `[lints]`
+[WARNING] `foo` (manifest) generated 1 warning
 
 "#]])
         .run();
@@ -48,7 +49,9 @@ fn inherited() {
 members = ["foo"]
 
 [workspace.lints.cargo]
-this-lint-does-not-exist = "warn"
+default = { level = "allow", priority = -1 }
+unknown_lints = "warn"
+this_lint_does_not_exist = "warn"
 "#,
         )
         .file(
@@ -67,24 +70,76 @@ workspace = true
         .file("foo/src/lib.rs", "")
         .build();
 
-    p.cargo("check -Zcargo-lints")
+    p.cargo("fetch -Zcargo-lints")
         .masquerade_as_nightly_cargo(&["cargo-lints"])
         .with_stderr_data(str![[r#"
-[WARNING] unknown lint: `this-lint-does-not-exist`
- --> Cargo.toml:6:1
+[WARNING] unknown lint: `this_lint_does_not_exist`
+ --> Cargo.toml:8:1
   |
-6 | this-lint-does-not-exist = "warn"
+8 | this_lint_does_not_exist = "warn"
   | ^^^^^^^^^^^^^^^^^^^^^^^^
   |
-[NOTE] `cargo::this-lint-does-not-exist` was inherited
- --> foo/Cargo.toml:9:1
+  = [NOTE] `cargo::unknown_lints` is set to `warn` in `[lints]`
+[WARNING] workspace (manifest) generated 1 warning
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn not_inherited() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["foo"]
+
+[workspace.lints.cargo]
+default = { level = "allow", priority = -1 }
+unknown_lints = "warn"
+this_lint_does_not_exist = "warn"
+"#,
+        )
+        .file(
+            "foo/Cargo.toml",
+            r#"
+[package]
+name = "foo"
+version = "0.0.1"
+edition = "2015"
+authors = []
+            "#,
+        )
+        .file("foo/src/lib.rs", "")
+        .build();
+
+    p.cargo("fetch -Zcargo-lints")
+        .masquerade_as_nightly_cargo(&["cargo-lints"])
+        .with_stderr_data(str![[r#"
+[WARNING] unknown lint: `this_lint_does_not_exist`
+ --> Cargo.toml:8:1
   |
-9 | workspace = true
-  | ----------------
+8 | this_lint_does_not_exist = "warn"
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = [NOTE] `cargo::unknown_lints` is set to `warn` by default
-[CHECKING] foo v0.0.1 ([ROOT]/foo/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+  = [NOTE] `cargo::unknown_lints` is set to `warn` in `[lints]`
+[WARNING] workspace (manifest) generated 1 warning
+[WARNING] missing `[lints]` to inherit `[workspace.lints]`
+ --> foo/Cargo.toml
+  = [NOTE] `cargo::missing_lints_inheritance` is set to `warn` by default
+[HELP] to inherit `workspace.lints, add:
+  |
+7 ~             
+8 + [lints]
+9 + workspace = true
+  |
+[HELP] to clarify your intent to not inherit, add:
+  |
+7 ~             
+8 + [lints]
+  |
+[WARNING] `foo` (manifest) generated 1 warning
 
 "#]])
         .run();

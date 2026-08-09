@@ -2,9 +2,9 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
-use cargo::core::dependency::DepKind;
-use cargo::core::{Dependency, FeatureMap, FeatureValue, PackageId, Summary};
-use cargo::util::interning::{InternedString, INTERNED_DEFAULT};
+use cargo::util::interning::{INTERNED_DEFAULT, InternedString};
+use cargo::workspace::dependency::DepKind;
+use cargo::workspace::{Dependency, FeatureMap, FeatureValue, PackageId, Summary};
 use cargo_platform::Platform;
 use varisat::ExtendFormula;
 
@@ -20,9 +20,10 @@ fn log_bits(x: usize) -> usize {
     (num_bits::<usize>() as u32 - x.leading_zeros()) as usize
 }
 
-// At this point is possible to select every version of every package.
-// So we need to mark certain versions as incompatible with each other.
-// We could add a clause not A, not B for all A and B that are incompatible,
+/// At this point is possible to select every version of every package.
+///
+/// So we need to mark certain versions as incompatible with each other.
+/// We could add a clause not A, not B for all A and B that are incompatible,
 fn sat_at_most_one(solver: &mut varisat::Solver<'_>, vars: &[varisat::Var]) {
     if vars.len() <= 1 {
         return;
@@ -327,7 +328,9 @@ fn process_compatible_dep_summaries(
     }
 }
 
-/// Resolution can be reduced to the SAT problem. So this is an alternative implementation
+/// Resolution can be reduced to the SAT problem.
+///
+/// So this is an alternative implementation
 /// of the resolver that uses a SAT library for the hard work. This is intended to be easy to read,
 /// as compared to the real resolver.
 ///

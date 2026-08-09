@@ -1,5 +1,6 @@
 use crate::command_prelude::*;
 
+use anyhow::Context;
 use cargo::ops;
 use cargo_credential::Secret;
 
@@ -21,7 +22,7 @@ pub fn cli() -> Command {
         .arg(opt("token", "API token to use when authenticating").value_name("TOKEN"))
         .arg_silent_suggestion()
         .after_help(color_print::cstr!(
-            "Run `<cyan,bold>cargo help yank</>` for more detailed information.\n"
+            "Run `<bright-cyan,bold>cargo help yank</>` for more detailed information.\n"
         ))
 }
 
@@ -60,5 +61,19 @@ fn resolve_crate<'k>(
         krate = Some(k);
         version = Some(v);
     }
+
+    if let Some(version) = version {
+        semver::Version::parse(version).with_context(|| {
+            if let Some(stripped) = version.strip_prefix("v") {
+                return format!(
+                    "the version provided, `{version}` is not a \
+                    valid SemVer version\n\n\
+                    help: try changing the version to `{stripped}`",
+                );
+            }
+            format!("invalid version `{version}`")
+        })?;
+    }
+
     Ok((krate, version))
 }

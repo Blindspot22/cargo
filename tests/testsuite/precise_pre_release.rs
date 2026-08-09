@@ -1,6 +1,6 @@
 //! Tests for selecting pre-release versions with `update --precise`.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::{project, str};
 
 #[cargo_test]
@@ -34,12 +34,12 @@ fn requires_nightly_cargo() {
 candidate versions found which didn't match: 0.1.2-pre.0
 location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `package v0.0.0 ([ROOT]/foo)`
-if you are looking for the prerelease package it needs to be specified explicitly
+[HELP] if you are looking for the prerelease package it needs to be specified explicitly
     my-dependency = { version = "0.1.2-pre.0" }
-perhaps a crate was updated and forgotten to be re-vendored?
+[NOTE] perhaps a crate was updated and forgotten to be re-vendored?
 
 "#]])
-        .run()
+        .run();
 }
 
 #[cargo_test]
@@ -107,9 +107,9 @@ fn pre_release_should_unmatched() {
 candidate versions found which didn't match: 0.1.2-pre.0
 location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `package v0.0.0 ([ROOT]/foo)`
-if you are looking for the prerelease package it needs to be specified explicitly
+[HELP] if you are looking for the prerelease package it needs to be specified explicitly
     my-dependency = { version = "0.1.2-pre.0" }
-perhaps a crate was updated and forgotten to be re-vendored?
+[NOTE] perhaps a crate was updated and forgotten to be re-vendored?
 
 "#]])
         .run();
@@ -125,9 +125,9 @@ perhaps a crate was updated and forgotten to be re-vendored?
 candidate versions found which didn't match: 0.2.0-0
 location searched: `dummy-registry` index (which is replacing registry `crates-io`)
 required by package `package v0.0.0 ([ROOT]/foo)`
-if you are looking for the prerelease package it needs to be specified explicitly
+[HELP] if you are looking for the prerelease package it needs to be specified explicitly
     my-dependency = { version = "0.2.0-0" }
-perhaps a crate was updated and forgotten to be re-vendored?
+[NOTE] perhaps a crate was updated and forgotten to be re-vendored?
 
 "#]])
         .run();

@@ -5,7 +5,7 @@ use cargo_util_schemas::core::PackageIdSpec;
 
 pub fn cli() -> Command {
     Command::new("info")
-        .about("Display information about a package in the registry")
+        .about("Display information about a package")
         .arg(
             Arg::new("package")
                 .required(true)
@@ -17,7 +17,7 @@ pub fn cli() -> Command {
         .arg_registry("Registry to search packages in")
         .arg_silent_suggestion()
         .after_help(color_print::cstr!(
-            "Run `<cyan,bold>cargo help info</>` for more detailed information.\n"
+            "Run `<bright-cyan,bold>cargo help info</>` for more detailed information.\n"
         ))
 }
 
@@ -29,7 +29,9 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let spec = PackageIdSpec::parse(package)
         .with_context(|| format!("invalid package ID specification: `{package}`"))?;
 
+    // Check if --registry or --index was explicitly provided
+    let explicit_registry = args._contains("registry") || args._contains("index");
     let reg_or_index = args.registry_or_index(gctx)?;
-    info(&spec, gctx, reg_or_index)?;
+    info(&spec, gctx, reg_or_index, explicit_registry)?;
     Ok(())
 }

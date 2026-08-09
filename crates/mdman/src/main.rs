@@ -1,6 +1,7 @@
 #![allow(clippy::print_stderr)]
+#![allow(clippy::disallowed_types)]
 
-use anyhow::{bail, format_err, Context, Error};
+use anyhow::{Context, Error, bail, format_err};
 use mdman::{Format, ManMap};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

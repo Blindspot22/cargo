@@ -3,9 +3,9 @@
 
 use std::path::Path;
 
+use crate::prelude::*;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
 use cargo_test_support::{assert_deps, assert_deps_contains};
@@ -25,7 +25,7 @@ fn build_dep_info() {
 
     assert!(depinfo_bin_path.is_file());
 
-    let depinfo = p.read_file(depinfo_bin_path.to_str().unwrap());
+    let depinfo = p.read_file(depinfo_bin_path);
 
     let bin_path = p.bin("foo");
     let src_path = p.root().join("src").join("foo.rs");
@@ -134,7 +134,7 @@ fn dep_path_inside_target_has_correct_path() {
 
     assert!(depinfo_path.is_file(), "{:?}", depinfo_path);
 
-    let depinfo = p.read_file(depinfo_path.to_str().unwrap());
+    let depinfo = p.read_file(depinfo_path);
 
     let bin_path = p.bin("a");
     let target_debug_blah = Path::new("target").join("debug").join("blah");
@@ -548,6 +548,106 @@ fn non_local_build_script() {
         &contents,
         str![[r#"
 [ROOT]/foo/target/debug/foo[EXE]: [ROOT]/foo/src/main.rs
+
+"#]],
+    );
+}
+
+#[cargo_test]
+fn no_trailing_separator_after_package_root_build_script() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "build.rs",
+            r#"
+            fn main() {
+                println!("cargo::rerun-if-changed=");
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+    let contents = p.read_file("target/debug/foo.d");
+
+    assert_e2e().eq(
+        &contents,
+        str![[r#"
+[ROOT]/foo/target/debug/foo[EXE]: [ROOT]/foo [ROOT]/foo/build.rs [ROOT]/foo/src/main.rs
+
+"#]],
+    );
+}
+
+#[cargo_test(nightly, reason = "proc_macro::tracked::path is unstable")]
+fn no_trailing_separator_after_package_root_proc_macro() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            edition = "2018"
+
+            [dependencies]
+            pm = { path = "pm" }
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            "
+            pm::noop!{}
+            fn main() {}
+            ",
+        )
+        .file(
+            "pm/Cargo.toml",
+            r#"
+            [package]
+            name = "pm"
+            version = "0.1.0"
+            edition = "2018"
+
+            [lib]
+            proc-macro = true
+            "#,
+        )
+        .file(
+            "pm/src/lib.rs",
+            r#"
+            #![feature(proc_macro_tracked_path)]
+            extern crate proc_macro;
+            use proc_macro::TokenStream;
+
+            #[proc_macro]
+            pub fn noop(_item: TokenStream) -> TokenStream {
+                proc_macro::tracked::path(
+                    std::env::current_dir().unwrap().to_str().unwrap()
+                );
+                "".parse().unwrap()
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+    let contents = p.read_file("target/debug/foo.d");
+
+    assert_e2e().eq(
+        &contents,
+        str![[r#"
+[ROOT]/foo/target/debug/foo[EXE]: [ROOT]/foo [ROOT]/foo/pm/src/lib.rs [ROOT]/foo/src/main.rs
 
 "#]],
     );

@@ -44,7 +44,7 @@
 use crate::cross_compile::try_alternate;
 use crate::paths;
 use crate::rustc_host;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use snapbox::Data;
 use snapbox::IntoData;
 use std::fmt;
@@ -227,7 +227,23 @@ fn add_regex_redactions(subs: &mut snapbox::Redactions) {
         regex!(r"\.cargo/target/(?<redacted>[0-9a-f]{2}/[0-9a-f]{14})"),
     )
     .unwrap();
+    // Avoid 2 letter crate names being merged into hashes in file paths.
+    // e.g. target/debug/build/d1/[HASH]/out
+    subs.insert(
+        "[HASH]",
+        regex!(r"build/[a-z0-9]{2}/(?<redacted>[a-f0-9]{16})"),
+    )
+    .unwrap();
     subs.insert("[HASH]", regex!(r"/[a-z0-9\-_]+-(?<redacted>[0-9a-f]{16})"))
+        .unwrap();
+    // Match multi-part hashes like `06/b451d0d6f88b1d` used in directory paths
+    subs.insert("[HASH]", regex!(r"/(?<redacted>[a-f0-9]{2}\/[0-9a-f]{14})"))
+        .unwrap();
+    // Match file name hashes like `foo-06b451d0d6f88b1d`
+    subs.insert("[HASH]", regex!(r"[a-z0-9]+-(?<redacted>[a-f0-9]{16})"))
+        .unwrap();
+    // Match path hashes like `../06b451d0d6f88b1d/..` used in directory paths
+    subs.insert("[HASH]", regex!(r"\/(?<redacted>[0-9a-f]{16})\/"))
         .unwrap();
     subs.insert(
         "[AVG_ELAPSED]",
@@ -329,6 +345,7 @@ static E2E_LITERAL_REDACTIONS: &[(&str, &str)] = &[
     ("[BLOCKING]", "    Blocking"),
     ("[GENERATED]", "   Generated"),
     ("[OPENING]", "     Opening"),
+    ("[MERGING]", "     Merging"),
 ];
 
 /// Checks that the given string contains the given contiguous lines
@@ -621,7 +638,7 @@ macro_rules! impl_from_tuple_for_inmemorydir {
     };
 }
 
-/// Extend `impl_from_tuple_for_inmemorydir`` to generate for the specified tuple and all smaller
+/// Extend `impl_from_tuple_for_inmemorydir` to generate for the specified tuple and all smaller
 /// tuples
 macro_rules! impl_from_tuples_for_inmemorydir {
     ($var1:ident $path1:ident $data1:ident, $($var:ident $path:ident $data:ident),+) => {

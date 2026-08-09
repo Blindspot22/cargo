@@ -2,84 +2,38 @@
 
 use std::fs;
 
-use snapbox::str;
-
+use crate::prelude::*;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::install::assert_has_installed_exe;
 use cargo_test_support::registry::{Package, RegistryBuilder};
+use cargo_test_support::str;
 use cargo_test_support::{
-    basic_bin_manifest, cargo_process, cargo_test, paths, project, symlink_supported,
-    ProjectBuilder,
+    ProjectBuilder, basic_bin_manifest, cargo_test, paths, project, symlink_supported,
 };
-///////////////////////////////
-//// Unstable feature tests start
-///////////////////////////////
 
 #[cargo_test]
-fn must_have_unstable_options() {
-    let lockfile_path = "mylockfile/is/burried/Cargo.lock";
+fn config_lockfile_created() {
+    let lockfile_path = "mylockfile/Cargo.lock";
     let p = make_project().build();
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
-        .with_stderr_data(str![[
-            r#"[ERROR] the `--lockfile-path` flag is unstable, pass `-Z unstable-options` to enable it
-See https://github.com/rust-lang/cargo/issues/14421 for more information about the `--lockfile-path` flag.
-
-"#]])
-        .with_status(101)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
+        .with_stderr_data(str![""])
         .run();
-}
 
-#[cargo_test]
-fn must_be_nightly() {
-    let lockfile_path = "mylockfile/is/burried/Cargo.lock";
-    let p = make_project().build();
-
-    p.cargo("generate-lockfile")
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
-        .with_stderr_data(str![[
-            r#"[ERROR] the `-Z` flag is only accepted on the nightly channel of Cargo, but this is the `stable` channel
-See https://doc.rust-lang.org/book/appendix-07-nightly-rust.html for more information about Rust release channels.
-
-"#]])
-        .with_status(101)
-        .run();
-}
-
-///////////////////////////////
-//// Unstable feature tests end
-///////////////////////////////
-
-#[cargo_test]
-fn basic_lockfile_created() {
-    let lockfile_path = "mylockfile/is/burried/Cargo.lock";
-    let p = make_project().build();
-
-    p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
-        .run();
     assert!(!p.root().join("Cargo.lock").exists());
-    assert!(p.root().join(lockfile_path).is_file());
+    assert!(p.root().join(lockfile_path).exists());
 }
 
 #[cargo_test]
-fn basic_lockfile_read() {
+fn config_basic_lockfile_read() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let p = make_project().file(lockfile_path, VALID_LOCKFILE).build();
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .run();
 
     assert!(!p.root().join("Cargo.lock").exists());
@@ -87,28 +41,22 @@ fn basic_lockfile_read() {
 }
 
 #[cargo_test]
-fn basic_lockfile_override() {
+fn config_basic_lockfile_override() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let p = make_project()
         .file("Cargo.lock", "This is an invalid lock file!")
         .build();
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .run();
 
     assert!(p.root().join(lockfile_path).is_file());
 }
 
-//////////////////////
-///// Symlink tests
-//////////////////////
-
 #[cargo_test]
-fn symlink_in_path() {
+fn config_symlink_in_path() {
     if !symlink_supported() {
         return;
     }
@@ -123,10 +71,8 @@ fn symlink_in_path() {
     assert!(p.root().join(src).is_dir());
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path.as_str())
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .run();
 
     assert!(p.root().join(lockfile_path).is_file());
@@ -134,7 +80,7 @@ fn symlink_in_path() {
 }
 
 #[cargo_test]
-fn symlink_lockfile() {
+fn config_symlink_lockfile() {
     if !symlink_supported() {
         return;
     }
@@ -151,17 +97,15 @@ fn symlink_lockfile() {
     assert!(p.root().join(src).is_file());
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .run();
 
     assert!(!p.root().join("Cargo.lock").exists());
 }
 
 #[cargo_test]
-fn broken_symlink() {
+fn config_broken_symlink() {
     if !symlink_supported() {
         return;
     }
@@ -174,23 +118,19 @@ fn broken_symlink() {
     assert!(!p.root().join(src).is_dir());
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .with_status(101)
-        .with_stderr_data(str![[
-            r#"[ERROR] failed to create directory `[ROOT]/foo/somedir/link`
-
+        .with_stderr_data(str![[r#"
+[ERROR] failed to create directory `[ROOT]/foo/somedir/link`
 ...
 
-"#
-        ]])
+"#]])
         .run();
 }
 
 #[cargo_test]
-fn loop_symlink() {
+fn config_loop_symlink() {
     if !symlink_supported() {
         return;
     }
@@ -206,27 +146,19 @@ fn loop_symlink() {
     assert!(!p.root().join(src).is_dir());
 
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .with_status(101)
-        .with_stderr_data(str![[
-            r#"[ERROR] failed to create directory `[ROOT]/foo/somedir/link`
-
+        .with_stderr_data(str![[r#"
+[ERROR] failed to create directory `[ROOT]/foo/somedir/link`
 ...
 
-"#
-        ]])
+"#]])
         .run();
 }
 
-/////////////////////////
-//// Commands tests
-/////////////////////////
-
 #[cargo_test]
-fn add_lockfile_override() {
+fn config_add_lockfile_override() {
     let lockfile_path = "mylockfile/Cargo.lock";
     project()
         .at("bar")
@@ -237,10 +169,8 @@ fn add_lockfile_override() {
         .file("Cargo.lock", "This is an invalid lock file!")
         .build();
     p.cargo("add")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .arg("--path")
         .arg("../bar")
         .run();
@@ -249,16 +179,14 @@ fn add_lockfile_override() {
 }
 
 #[cargo_test]
-fn clean_lockfile_override() {
+fn config_clean_lockfile_override() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let p = make_project()
         .file("Cargo.lock", "This is an invalid lock file!")
         .build();
     p.cargo("clean")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .arg("--package")
         .arg("test_foo")
         .run();
@@ -267,16 +195,14 @@ fn clean_lockfile_override() {
 }
 
 #[cargo_test]
-fn fix_lockfile_override() {
+fn config_fix_lockfile_override() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let p = make_project()
         .file("Cargo.lock", "This is an invalid lock file!")
         .build();
     p.cargo("fix")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .arg("--package")
         .arg("test_foo")
         .arg("--allow-no-vcs")
@@ -286,16 +212,14 @@ fn fix_lockfile_override() {
 }
 
 #[cargo_test]
-fn publish_lockfile_read() {
+fn config_publish_lockfile_read() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let p = make_project().file(lockfile_path, VALID_LOCKFILE).build();
     let registry = RegistryBuilder::new().http_api().http_index().build();
 
     p.cargo("publish")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .replace_crates_io(registry.index_url())
         .run();
 
@@ -304,7 +228,7 @@ fn publish_lockfile_read() {
 }
 
 #[cargo_test]
-fn remove_lockfile_override() {
+fn config_remove_lockfile_override() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let manifest = r#"
         [package]
@@ -334,10 +258,8 @@ fn remove_lockfile_override() {
         .file("Cargo.lock", "This is an invalid lock file!")
         .build();
     p.cargo("remove")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .arg("test_bar")
         .run();
 
@@ -345,7 +267,7 @@ fn remove_lockfile_override() {
 }
 
 #[cargo_test]
-fn assert_respect_pinned_version_from_lockfile_path() {
+fn config_assert_respect_pinned_version_from_lockfile_path() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let p = project()
         .file(
@@ -371,10 +293,8 @@ bar = "0.1.0"
 
     Package::new("bar", "0.1.0").publish();
     p.cargo("generate-lockfile")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .run();
 
     assert!(!p.root().join("Cargo.lock").exists());
@@ -384,16 +304,15 @@ bar = "0.1.0"
 
     Package::new("bar", "0.1.1").publish();
     p.cargo("package")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .run();
 
-    assert!(p
-        .root()
-        .join("target/package/test_foo-0.5.0/Cargo.lock")
-        .is_file());
+    assert!(
+        p.root()
+            .join("target/package/test_foo-0.5.0/Cargo.lock")
+            .is_file()
+    );
 
     let path = p.root().join("target/package/test_foo-0.5.0/Cargo.lock");
     let contents = fs::read_to_string(path).unwrap();
@@ -402,13 +321,12 @@ bar = "0.1.0"
 }
 
 #[cargo_test]
-fn install_respects_lock_file_path() {
-    // `cargo install` will imply --locked when lockfile path is provided
-    Package::new("bar", "0.1.0").publish();
-    Package::new("bar", "0.1.1")
+fn config_install_ignores_lock_file_path() {
+    Package::new("bar", "0.1.0")
         .file("src/lib.rs", "not rust")
         .publish();
-    // Publish with lockfile containing bad version of `bar` (0.1.1)
+    Package::new("bar", "0.1.1").publish();
+    // Publish with lockfile containing good version of `bar` (0.1.1)
     Package::new("foo", "0.1.0")
         .dep("bar", "0.1")
         .file("src/lib.rs", "")
@@ -434,16 +352,11 @@ dependencies = [
         )
         .publish();
 
-    cargo_process("install foo --locked")
-        .with_stderr_data(str![[r#"
-...
-[..]not rust[..]
-...
-"#]])
-        .with_status(101)
-        .run();
+    let p = project().at("install").build();
 
-    // Create lockfile with the good `bar` version (0.1.0) and use it for install
+    p.cargo("install foo --locked").run();
+
+    // Create lockfile with the bad `bar` version (0.1.0) and see it ignored for install
     project()
         .file(
             "Cargo.lock",
@@ -462,40 +375,17 @@ dependencies = [
 "#,
         )
         .build();
-    cargo_process("install foo -Zunstable-options --lockfile-path foo/Cargo.lock")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
+    p.cargo("install foo --locked")
+        .arg("--config")
+        .arg("resolver.lockfile-path='../foo/Cargo.lock'")
         .run();
 
     assert!(paths::root().join("foo/Cargo.lock").is_file());
     assert_has_installed_exe(paths::cargo_home(), "foo");
 }
 
-#[cargo_test]
-fn install_lock_file_path_must_present() {
-    // `cargo install` will imply --locked when lockfile path is provided
-    Package::new("bar", "0.1.0").publish();
-    Package::new("foo", "0.1.0")
-        .dep("bar", "0.1")
-        .file("src/lib.rs", "")
-        .file(
-            "src/main.rs",
-            "extern crate foo; extern crate bar; fn main() {}",
-        )
-        .publish();
-
-    cargo_process("install foo -Zunstable-options --lockfile-path lockfile_dir/Cargo.lock")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .with_stderr_data(str![[r#"
-...
-[ERROR] no Cargo.lock file found in the requested path [ROOT]/lockfile_dir/Cargo.lock
-...
-"#]])
-        .with_status(101)
-        .run();
-}
-
-#[cargo_test]
-fn run_embed() {
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn config_run_embed() {
     let lockfile_path = "mylockfile/Cargo.lock";
     let invalid_lockfile = "Cargo.lock";
     let p = project()
@@ -504,11 +394,10 @@ fn run_embed() {
         .build();
 
     p.cargo("run")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
-        .arg("-Zunstable-options")
+        .masquerade_as_nightly_cargo(&["script"])
         .arg("-Zscript")
-        .arg("--lockfile-path")
-        .arg(lockfile_path)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{lockfile_path}'"))
         .arg("--manifest-path")
         .arg("src/main.rs")
         .run();
@@ -516,21 +405,35 @@ fn run_embed() {
     assert!(p.root().join(lockfile_path).is_file());
 
     p.cargo("run")
-        .masquerade_as_nightly_cargo(&["lockfile-path"])
+        .masquerade_as_nightly_cargo(&["script"])
         .arg("-Zunstable-options")
         .arg("-Zscript")
-        .arg("--lockfile-path")
-        .arg(invalid_lockfile)
+        .arg("--config")
+        .arg(&format!("resolver.lockfile-path='{invalid_lockfile}'"))
         .arg("--manifest-path")
         .arg("src/main.rs")
         .with_status(101)
-        .with_stderr_data(str![[
-            r#"[WARNING] `package.edition` is unspecified, defaulting to `2021`
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to the latest edition (currently `[..]`)
+[HELP] to pin the edition, run `cargo fix --manifest-path [ROOT]/foo/src/main.rs`
 [ERROR] failed to parse lock file at: [ROOT]/foo/Cargo.lock
-
 ...
-"#
-        ]])
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn config_lockfile_path_rejects_templates() {
+    let p = make_project().build();
+
+    p.cargo("generate-lockfile")
+        .arg("--config")
+        .arg("resolver.lockfile-path='{var}/Cargo.lock'")
+        .with_status(101)
+        .with_stderr_data(str![[r#"
+[ERROR] unexpected variable `var` in resolver.lockfile-path `{var}/Cargo.lock`
+
+"#]])
         .run();
 }
 

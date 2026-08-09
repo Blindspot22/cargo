@@ -2,7 +2,7 @@
 //!
 //! Note: Some tests are located in the resolver-tests package.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
@@ -46,7 +46,7 @@ fn simple() {
     );
     assert!(
         !lock.contains("1.1.0"),
-        "dep maximimal version cannot be present"
+        "dep maximal version cannot be present"
     );
 }
 
@@ -84,7 +84,7 @@ fn mixed_dependencies() {
     ... required by package `foo v0.0.1 ([ROOT]/foo)`
 versions that meet the requirements `^1.1` are: 1.1.0
 
-all possible versions conflict with previously selected packages.
+all possible versions conflict with previously selected packages
 
   previously selected package `dep v1.0.0`
     ... which satisfies dependency `dep = "^1.0"` of package `foo v0.0.1 ([ROOT]/foo)`
@@ -139,7 +139,7 @@ fn yanked() {
     );
     assert!(
         !lock.contains("1.2.0"),
-        "dep maximimal version cannot be present"
+        "dep maximal version cannot be present"
     );
 }
 
@@ -189,7 +189,7 @@ fn indirect() {
     );
     assert!(
         !lock.contains("1.1.0"),
-        "direct maximimal version cannot be present"
+        "direct maximal version cannot be present"
     );
     assert!(
         !lock.contains("2.0.0"),
@@ -244,7 +244,7 @@ fn indirect_conflict() {
     ... which satisfies dependency `direct = "^1.0"` of package `foo v0.0.1 ([ROOT]/foo)`
 versions that meet the requirements `^2.1` are: 2.2.0, 2.1.0
 
-all possible versions conflict with previously selected packages.
+all possible versions conflict with previously selected packages
 
   previously selected package `indirect v2.0.0`
     ... which satisfies dependency `indirect = "^2.0"` of package `foo v0.0.1 ([ROOT]/foo)`

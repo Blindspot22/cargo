@@ -4,10 +4,11 @@ use std::fs;
 use std::path::Path;
 use std::str::from_utf8;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
+use crate::utils::cargo_process;
 use cargo_test_support::registry::Package;
 use cargo_test_support::str;
-use cargo_test_support::{basic_manifest, cargo_exe, cargo_process, paths, process, project};
+use cargo_test_support::{basic_manifest, paths, project};
 
 #[cargo_test]
 fn help() {
@@ -74,22 +75,18 @@ fn help_with_man_and_path(
     path: &Path,
 ) {
     let contents = if display_command == "man" {
-        fs::read_to_string(format!("src/etc/man/cargo-{}.1", actual_subcommand)).unwrap()
+        fs::read_to_string(format!("etc/man/cargo-{}.1", actual_subcommand)).unwrap()
     } else {
         fs::read_to_string(format!(
-            "src/doc/man/generated_txt/cargo-{}.txt",
+            "doc/man/generated_txt/cargo-{}.txt",
             actual_subcommand
         ))
         .unwrap()
     };
 
-    let output = process(&cargo_exe())
-        .arg("help")
-        .arg(subcommand)
+    let output = cargo_process(&format!("help {subcommand}"))
         .env("PATH", path)
-        .exec_with_output()
-        .unwrap();
-    assert!(output.status.success());
+        .run();
     let stderr = from_utf8(&output.stderr).unwrap();
     if display_command.is_empty() {
         assert_eq!(stderr, "");
@@ -101,13 +98,9 @@ fn help_with_man_and_path(
 }
 
 fn help_with_stdout_and_path(subcommand: &str, path: &Path) -> String {
-    let output = process(&cargo_exe())
-        .arg("help")
-        .arg(subcommand)
+    let output = cargo_process(&format!("help {subcommand}"))
         .env("PATH", path)
-        .exec_with_output()
-        .unwrap();
-    assert!(output.status.success());
+        .run();
     let stderr = from_utf8(&output.stderr).unwrap();
     assert_eq!(stderr, "");
     let stdout = from_utf8(&output.stdout).unwrap();
@@ -123,6 +116,36 @@ fn help_man() {
 
     // Check with no commands in PATH.
     help_with_man_and_path("", "build", "build", Path::new(""));
+}
+
+#[cargo_test]
+fn help_man_temp_file_extension() {
+    let p = project()
+        .at("man")
+        .file("Cargo.toml", &basic_manifest("man", "1.0.0"))
+        .file(
+            "src/main.rs",
+            r#"
+                fn main() {
+                    let path = std::env::args().nth(1).unwrap();
+                    if path.ends_with(".1") {
+                        println!("has .1 extension");
+                    } else {
+                        println!("no .1 extension");
+                    }
+                }
+            "#,
+        )
+        .build();
+    p.cargo("build").run();
+
+    cargo_process("help build")
+        .env("PATH", &p.target_debug_dir())
+        .with_stdout_data(str![[r#"
+has .1 extension
+
+"#]])
+        .run();
 }
 
 #[cargo_test]
@@ -150,10 +173,10 @@ fn help_alias() {
         .with_stderr_data(str![[r#"
 [ERROR] no such command: `empty-alias`
 
-	Did you mean `empty-alias`?
+[HELP] a command with a similar name exists: `empty-alias`
 
-	View all installed commands with `cargo --list`
-	Find a package to install `empty-alias` with `cargo search cargo-empty-alias`
+[HELP] view all installed commands with `cargo --list`
+[HELP] find a package to install `empty-alias` with `cargo search cargo-empty-alias`
 
 "#]])
         .run();

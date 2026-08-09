@@ -1,6 +1,7 @@
 #![allow(clippy::print_stderr)]
+#![allow(clippy::disallowed_types)]
 
-use std::io::{stdin, BufReader, Read};
+use std::io::{BufReader, Read, stdin};
 use std::{collections::HashMap, collections::HashSet, env, fs};
 
 use anyhow::Error;

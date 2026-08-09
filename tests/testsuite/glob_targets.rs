@@ -1,7 +1,7 @@
 //! Tests for target filter flags with glob patterns.
 
-use cargo_test_support::prelude::*;
-use cargo_test_support::{project, str, Project};
+use crate::prelude::*;
+use cargo_test_support::{Project, project, str};
 
 #[cargo_test]
 fn build_example() {

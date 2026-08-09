@@ -7,15 +7,16 @@
 //! tested 1.0 to 1.51. Run this with:
 //!
 //! ```console
-//! cargo test --test testsuite -- old_cargos --nocapture --ignored
+//! cargo test --test testsuite -- old_cargos --no-capture --ignored
 //! ```
 
 use std::fs;
 
+use crate::prelude::*;
+use crate::utils::cargo_exe;
 use cargo::CargoResult;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, Dependency, Package};
-use cargo_test_support::{cargo_exe, execs, paths, process, project, rustc_host, str};
+use cargo_test_support::{execs, paths, process, project, rustc_host, str};
 use cargo_util::{ProcessBuilder, ProcessError};
 use semver::Version;
 
@@ -656,7 +657,7 @@ fn index_cache_rebuild() {
         .with_stderr_data(str![[r#"
 [WARNING] no edition set: defaulting to the 2015 edition while the latest is [..]
 [UPDATING] `dummy-registry` index
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] bar v1.0.1 (registry `dummy-registry`)
 [CHECKING] bar v1.0.1

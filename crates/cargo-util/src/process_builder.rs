@@ -1,7 +1,7 @@
 use crate::process_error::ProcessError;
 use crate::read2;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use jobserver::Client;
 use shell_escape::escape;
 use tempfile::NamedTempFile;
@@ -20,6 +20,8 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 pub struct ProcessBuilder {
     /// The program to execute.
     program: OsString,
+    /// Best-effort replacement for arg0
+    arg0: Option<OsString>,
     /// A list of arguments to pass to the program.
     args: Vec<OsString>,
     /// Any environment variables that should be set for the program.
@@ -75,6 +77,7 @@ impl ProcessBuilder {
     pub fn new<T: AsRef<OsStr>>(cmd: T) -> ProcessBuilder {
         ProcessBuilder {
             program: cmd.as_ref().to_os_string(),
+            arg0: None,
             args: Vec::new(),
             cwd: None,
             env: BTreeMap::new(),
@@ -89,6 +92,12 @@ impl ProcessBuilder {
     /// (chainable) Sets the executable for the process.
     pub fn program<T: AsRef<OsStr>>(&mut self, program: T) -> &mut ProcessBuilder {
         self.program = program.as_ref().to_os_string();
+        self
+    }
+
+    /// (chainable) Overrides `arg0` for this program.
+    pub fn arg0<T: AsRef<OsStr>>(&mut self, arg: T) -> &mut ProcessBuilder {
+        self.arg0 = Some(arg.as_ref().to_os_string());
         self
     }
 
@@ -142,6 +151,11 @@ impl ProcessBuilder {
         self.wrappers.last().unwrap_or(&self.program)
     }
 
+    /// Gets the program arg0.
+    pub fn get_arg0(&self) -> Option<&OsStr> {
+        self.arg0.as_deref()
+    }
+
     /// Gets the program arguments.
     pub fn get_args(&self) -> impl Iterator<Item = &OsString> {
         self.wrappers
@@ -158,7 +172,7 @@ impl ProcessBuilder {
     }
 
     /// Gets an environment variable as the process will see it (will inherit from environment
-    /// unless explicitally unset).
+    /// unless explicitly unset).
     pub fn get_env(&self, var: &str) -> Option<OsString> {
         self.env
             .get(var)
@@ -483,6 +497,11 @@ impl ProcessBuilder {
             cmd.args(iter);
             cmd
         };
+        #[cfg(unix)]
+        if let Some(arg0) = self.get_arg0() {
+            use std::os::unix::process::CommandExt as _;
+            command.arg0(arg0);
+        }
         if let Some(cwd) = self.get_cwd() {
             command.current_dir(cwd);
         }
@@ -542,7 +561,7 @@ impl ProcessBuilder {
 ///
 /// You should set `__CARGO_TEST_FORCE_ARGFILE` to enable this.
 fn debug_force_argfile(retry_enabled: bool) -> bool {
-    cfg!(debug_assertions) && env::var("__CARGO_TEST_FORCE_ARGFILE").is_ok() && retry_enabled
+    retry_enabled && env::var("__CARGO_TEST_FORCE_ARGFILE").is_ok()
 }
 
 /// Creates new pipes for stderr, stdout, and optionally stdin.
@@ -564,7 +583,7 @@ fn close_tempfile_and_log_error(file: NamedTempFile) {
 
 #[cfg(unix)]
 mod imp {
-    use super::{close_tempfile_and_log_error, debug_force_argfile, ProcessBuilder, ProcessError};
+    use super::{ProcessBuilder, ProcessError, close_tempfile_and_log_error, debug_force_argfile};
     use anyhow::Result;
     use std::io;
     use std::os::unix::process::CommandExt;
@@ -606,8 +625,9 @@ mod imp {
     use super::{ProcessBuilder, ProcessError};
     use anyhow::Result;
     use std::io;
-    use windows_sys::Win32::Foundation::{BOOL, FALSE, TRUE};
+    use windows_sys::Win32::Foundation::{FALSE, TRUE};
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows_sys::core::BOOL;
 
     unsafe extern "system" fn ctrlc_handler(_: u32) -> BOOL {
         // Do nothing; let the child process handle it.

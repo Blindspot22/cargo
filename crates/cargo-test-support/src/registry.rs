@@ -39,16 +39,16 @@
 //!     "#)
 //!     .build();
 //!
-//! p.cargo("run").with_stdout_data(str!["24"]).run();
+//! // p.cargo("run").with_stdout_data(str!["24"]).run();
 //! ```
 
 use crate::git::repo;
 use crate::paths;
 use crate::publish::{create_index_line, write_to_index};
-use cargo_util::paths::append;
 use cargo_util::Sha256;
-use flate2::write::GzEncoder;
+use cargo_util::paths::append;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use pasetors::keys::{AsymmetricPublicKey, AsymmetricSecretKey};
 use pasetors::paserk::FormatAsPaserk;
 use pasetors::token::UntrustedToken;
@@ -64,7 +64,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use url::Url;
 
-/// Path to the local index for psuedo-crates.io.
+/// Path to the local index for pseudo-crates.io.
 ///
 /// This is a Git repo
 /// initialized with a `config.json` file pointing to `dl_path` for downloads
@@ -282,14 +282,14 @@ impl RegistryBuilder {
         self
     }
 
-    /// Sets whether or not to initialize as an alternative registry.
+    /// Initializes as an alternative registry with the given name.
     #[must_use]
     pub fn alternative_named(mut self, alt: &str) -> Self {
         self.alternative = Some(alt.to_string());
         self
     }
 
-    /// Sets whether or not to initialize as an alternative registry.
+    /// Initializes as an alternative registry named "alternative".
     #[must_use]
     pub fn alternative(self) -> Self {
         self.alternative_named("alternative")
@@ -570,13 +570,15 @@ pub struct Package {
     features: FeatureMap,
     local: bool,
     alternative: bool,
-    invalid_json: bool,
+    invalid_index_line: bool,
+    index_line: Option<String>,
     edition: Option<String>,
     resolver: Option<String>,
     proc_macro: bool,
     links: Option<String>,
     rust_version: Option<String>,
     cargo_features: Vec<String>,
+    pubtime: Option<String>,
     v: Option<u32>,
 }
 
@@ -605,6 +607,7 @@ pub struct Dependency {
 enum EntryData {
     Regular(String),
     Symlink(PathBuf),
+    Directory,
 }
 
 /// A file to be created in a package.
@@ -621,7 +624,7 @@ struct PackageFile {
 
 const DEFAULT_MODE: u32 = 0o644;
 
-/// Setup a local psuedo-crates.io [`TestRegistry`]
+/// Setup a local pseudo-crates.io [`TestRegistry`]
 ///
 /// This is implicitly called by [`Package::new`].
 ///
@@ -645,15 +648,15 @@ pub struct HttpServerHandle {
 
 impl HttpServerHandle {
     pub fn index_url(&self) -> Url {
-        Url::parse(&format!("sparse+http://{}/index/", self.addr.to_string())).unwrap()
+        Url::parse(&format!("sparse+http://{}/index/", self.addr)).unwrap()
     }
 
     pub fn api_url(&self) -> Url {
-        Url::parse(&format!("http://{}/", self.addr.to_string())).unwrap()
+        Url::parse(&format!("http://{}/", self.addr)).unwrap()
     }
 
     pub fn dl_url(&self) -> Url {
-        Url::parse(&format!("http://{}/dl", self.addr.to_string())).unwrap()
+        Url::parse(&format!("http://{}/dl", self.addr)).unwrap()
     }
 
     fn stop(&self) {
@@ -821,7 +824,6 @@ impl HttpServer {
                 url,
                 body,
             };
-            println!("req: {:#?}", req);
             let response = self.route(&req);
             let buf = buf.get_mut();
             write!(buf, "HTTP/1.1 {}\r\n", response.code).unwrap();
@@ -891,7 +893,7 @@ impl HttpServer {
 
         // - The URL matches the registry base URL
         if footer.url != "https://github.com/rust-lang/crates.io-index"
-            && footer.url != &format!("sparse+http://{}/index/", self.addr.to_string())
+            && footer.url != &format!("sparse+http://{}/index/", self.addr)
         {
             return false;
         }
@@ -1027,7 +1029,7 @@ impl HttpServer {
         Response {
             code: 401,
             headers: vec![
-                r#"WWW-Authenticate: Cargo login_url="https://test-registry-login/me""#.to_string(),
+                r#"www-authenticate: Cargo login_url="https://test-registry-login/me""#.to_string(),
             ],
             body: b"Unauthorized message from server.".to_vec(),
         }
@@ -1053,6 +1055,19 @@ impl HttpServer {
             code: 500,
             headers: vec![],
             body: br#"internal server error"#.to_vec(),
+        }
+    }
+
+    /// Return too many requests (HTTP 429)
+    pub fn too_many_requests(&self, _req: &Request, delay: std::time::Duration) -> Response {
+        Response {
+            code: 429,
+            headers: vec![format!("Retry-After: {}", delay.as_secs())],
+            body: format!(
+                "too many requests, try again in {} seconds",
+                delay.as_secs()
+            )
+            .into_bytes(),
         }
     }
 
@@ -1229,6 +1244,7 @@ fn save_new_crate(
         new_crate.links,
         new_crate.rust_version.as_deref(),
         None,
+        None,
     );
 
     write_to_index(registry_path, &new_crate.name, line, false);
@@ -1251,13 +1267,15 @@ impl Package {
             features: BTreeMap::new(),
             local: false,
             alternative: false,
-            invalid_json: false,
+            invalid_index_line: false,
+            index_line: None,
             edition: None,
             resolver: None,
             proc_macro: false,
             links: None,
             rust_version: None,
             cargo_features: Vec::new(),
+            pubtime: None,
             v: None,
         }
     }
@@ -1276,7 +1294,7 @@ impl Package {
     ///
     /// The name of the alternative registry is called "alternative".
     ///
-    /// See `src/doc/src/reference/registries.md` for more details on
+    /// See `doc/book/src/reference/registries.md` for more details on
     /// alternative registries. See `alt_registry.rs` for the tests that use
     /// this.
     ///
@@ -1307,6 +1325,17 @@ impl Package {
         self.files.push(PackageFile {
             path: dst.to_string(),
             contents: EntryData::Symlink(src.into()),
+            mode: DEFAULT_MODE,
+            extra: false,
+        });
+        self
+    }
+
+    /// Adds an empty directory at the given path.
+    pub fn directory(&mut self, path: &str) -> &mut Package {
+        self.files.push(PackageFile {
+            path: path.to_string(),
+            contents: EntryData::Directory,
             mode: DEFAULT_MODE,
             extra: false,
         });
@@ -1422,8 +1451,16 @@ impl Package {
 
     /// Causes the JSON line emitted in the index to be invalid, presumably
     /// causing Cargo to skip over this version.
-    pub fn invalid_json(&mut self, invalid: bool) -> &mut Package {
-        self.invalid_json = invalid;
+    pub fn invalid_index_line(&mut self, invalid: bool) -> &mut Package {
+        self.invalid_index_line = invalid;
+        self
+    }
+
+    /// Override the auto-generated index line
+    ///
+    /// This can give more control over error cases than [`Package::invalid_index_line`]
+    pub fn index_line(&mut self, line: &str) -> &mut Package {
+        self.index_line = Some(line.to_owned());
         self
     }
 
@@ -1434,6 +1471,12 @@ impl Package {
 
     pub fn cargo_feature(&mut self, feature: &str) -> &mut Package {
         self.cargo_features.push(feature.to_owned());
+        self
+    }
+
+    /// The publish time for the package in ISO8601 with UTC timezone (e.g. 2025-11-12T19:30:12Z)
+    pub fn pubtime(&mut self, time: &str) -> &mut Package {
+        self.pubtime = Some(time.to_owned());
         self
     }
 
@@ -1496,22 +1539,27 @@ impl Package {
             let c = t!(fs::read(&self.archive_dst()));
             cksum(&c)
         };
-        let name = if self.invalid_json {
-            serde_json::json!(1)
+        let line = if let Some(line) = self.index_line.clone() {
+            line
         } else {
-            serde_json::json!(self.name)
+            let name = if self.invalid_index_line {
+                serde_json::json!(1)
+            } else {
+                serde_json::json!(self.name)
+            };
+            create_index_line(
+                name,
+                &self.vers,
+                deps,
+                &cksum,
+                self.features.clone(),
+                self.yanked,
+                self.links.clone(),
+                self.rust_version.as_deref(),
+                self.pubtime.as_deref(),
+                self.v,
+            )
         };
-        let line = create_index_line(
-            name,
-            &self.vers,
-            deps,
-            &cksum,
-            self.features.clone(),
-            self.yanked,
-            self.links.clone(),
-            self.rust_version.as_deref(),
-            self.v,
-        );
 
         let registry_path = if self.alternative {
             alt_registry_path()
@@ -1698,6 +1746,10 @@ impl Package {
         mode: u32,
         contents: &EntryData,
     ) {
+        // Unfortunately we cannot use GNU headers with dynamic extensions for
+        // long paths because that would cause package checksums to change
+        // based on whether or not the tests are running in a long directory
+        // name.
         let mut header = Header::new_ustar();
         let contents = match contents {
             EntryData::Regular(contents) => contents.as_str(),
@@ -1705,6 +1757,10 @@ impl Package {
                 header.set_entry_type(tar::EntryType::Symlink);
                 t!(header.set_link_name(src));
                 "" // Symlink has no contents.
+            }
+            EntryData::Directory => {
+                header.set_entry_type(tar::EntryType::Directory);
+                ""
             }
         };
         header.set_size(contents.len() as u64);

@@ -1,13 +1,13 @@
 //! Tests for the `cargo fix` command.
 
-use cargo::core::Edition;
+use crate::prelude::*;
+use crate::utils::tools;
+use cargo::workspace::Edition;
 use cargo_test_support::compare::assert_e2e;
 use cargo_test_support::git::{self, init};
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{Dependency, Package};
 use cargo_test_support::str;
-use cargo_test_support::tools;
 use cargo_test_support::{basic_manifest, is_nightly, project};
 
 #[cargo_test]
@@ -192,9 +192,107 @@ fn prepare_for_2018() {
 
     println!("{}", p.read_file("src/lib.rs"));
     assert!(p.read_file("src/lib.rs").contains("use crate::foo::FOO;"));
-    assert!(p
-        .read_file("src/lib.rs")
-        .contains("let x = crate::foo::FOO;"));
+    assert!(
+        p.read_file("src/lib.rs")
+            .contains("let x = crate::foo::FOO;")
+    );
+}
+
+#[cargo_test]
+fn fix_tests_with_edition() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2018"
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                #![allow(ellipsis_inclusive_range_patterns)]
+                pub fn foo() {}
+
+                #[cfg(test)]
+                mod tests {
+                    #[test]
+                    fn it_works() {
+                        f();
+                    }
+                    fn f() -> bool {
+                        let x = 123;
+                        match x {
+                            0...100 => true,
+                            _ => false,
+                        }
+                    }
+                }
+            "#,
+        )
+        .build();
+
+    p.cargo("fix --edition --allow-no-vcs")
+        .with_stderr_data(str![[r#"
+[MIGRATING] Cargo.toml from 2018 edition to 2021
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[MIGRATING] src/lib.rs from 2018 edition to 2021
+[FIXED] src/lib.rs (1 fix)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .with_stdout_data("")
+        .run();
+    // Check that the test is fixed.
+    assert!(p.read_file("src/lib.rs").contains(r#"0..=100 => true,"#));
+}
+
+#[cargo_test]
+fn fix_tests_with_edition_idioms() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = 'foo'
+                version = '0.1.0'
+                edition = '2018'
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            r#"
+                pub fn foo() {}
+
+                #[cfg(test)]
+                mod tests {
+                    #[test]
+                    fn it_works() {
+                        f();
+                    }
+
+                    use std::any::Any;
+                    pub fn f() {
+                        let _x: Box<Any> = Box::new(3);
+                    }
+                }
+            "#,
+        )
+        .build();
+
+    p.cargo("fix --edition-idioms --allow-no-vcs")
+        .with_stderr_data(str![[r#"
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[FIXED] src/lib.rs (1 fix)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .with_stdout_data("")
+        .run();
+    // Check that the test is fixed.
+    assert!(p.read_file("src/lib.rs").contains("Box<dyn Any>"));
 }
 
 #[cargo_test]
@@ -635,7 +733,7 @@ fn warns_about_dirty_working_directory() {
     p.cargo("fix")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] the working directory of this package has uncommitted changes, and `cargo fix` can potentially perform destructive changes; if you'd like to suppress this error pass `--allow-dirty`, `--allow-staged`, or commit the changes to these files:
+[ERROR] the working directory of this package has uncommitted changes, and `cargo fix` can potentially perform destructive changes; if you'd like to suppress this error pass `--allow-dirty`, or commit the changes to these files:
 
   * src/lib.rs (dirty)
 
@@ -656,7 +754,7 @@ fn warns_about_staged_working_directory() {
     p.cargo("fix")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] the working directory of this package has uncommitted changes, and `cargo fix` can potentially perform destructive changes; if you'd like to suppress this error pass `--allow-dirty`, `--allow-staged`, or commit the changes to these files:
+[ERROR] the working directory of this package has uncommitted changes, and `cargo fix` can potentially perform destructive changes; if you'd like to suppress this error pass `--allow-dirty`, or commit the changes to these files:
 
   * src/lib.rs (staged)
 
@@ -677,7 +775,7 @@ fn errors_about_untracked_files() {
     p.cargo("fix")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[ERROR] the working directory of this package has uncommitted changes, and `cargo fix` can potentially perform destructive changes; if you'd like to suppress this error pass `--allow-dirty`, `--allow-staged`, or commit the changes to these files:
+[ERROR] the working directory of this package has uncommitted changes, and `cargo fix` can potentially perform destructive changes; if you'd like to suppress this error pass `--allow-dirty`, or commit the changes to these files:
 
   * Cargo.toml (dirty)
   * src/ (dirty)
@@ -708,7 +806,7 @@ fn does_not_warn_about_dirty_ignored_files() {
 }
 
 #[cargo_test]
-fn fix_all_targets_by_default() {
+fn do_not_fix_tests_by_default() {
     let p = project()
         .file("src/lib.rs", "pub fn foo() { let mut x = 3; let _ = x; }")
         .file("tests/foo.rs", "pub fn foo() { let mut x = 3; let _ = x; }")
@@ -717,7 +815,7 @@ fn fix_all_targets_by_default() {
         .env("__CARGO_FIX_YOLO", "1")
         .run();
     assert!(!p.read_file("src/lib.rs").contains("let mut x"));
-    assert!(!p.read_file("tests/foo.rs").contains("let mut x"));
+    assert!(p.read_file("tests/foo.rs").contains("let mut x"));
 }
 
 #[cargo_test]
@@ -1248,7 +1346,7 @@ fn only_warn_for_relevant_crates() {
     p.cargo("fix --allow-no-vcs --edition")
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2015 edition to 2018
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [MIGRATING] src/lib.rs from 2015 edition to 2018
@@ -1330,11 +1428,18 @@ fn fix_to_broken_code() {
     p.cargo("fix --allow-no-vcs --broken-code")
         .cwd("bar")
         .env("RUSTC", p.root().join("foo/target/debug/foo"))
-        .with_status(101)
         .with_stderr_data(str![[r#"
+[COMPILING] bar v0.1.0 ([ROOT]/foo/bar)
+[ERROR] errors present after applying fixes to crate `bar`
+  |
+  = cause: thread 'main' ([..]) panicked at src/main.rs:23:29:
+           explicit panic
+           [NOTE] run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
+[NOTE] original diagnostics will follow:
 ...
-[WARNING] failed to automatically apply fixes suggested by rustc to crate `bar`
-...
+
 "#]])
         .run();
 
@@ -1466,7 +1571,7 @@ fn edition_v2_resolver_report() {
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2018 edition to 2021
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] common v1.0.0 (registry `dummy-registry`)
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
@@ -1675,13 +1780,18 @@ fn abnormal_exit() {
         )
         // "signal: 6, SIGABRT: process abort signal" on some platforms
         .with_stderr_data(str![[r#"
+[LOCKING] 1 package to highest compatible version
+[COMPILING] pm v0.1.0 ([ROOT]/foo/pm)
+[CHECKING] foo v0.1.0 ([ROOT]/foo)
+[ERROR] errors present after applying fixes to crate `foo`
+  |
+  = cause: I'm not a diagnostic.
+  = cause: rustc exited abnormally: [..]
+[HELP] to report this as a bug, open an issue at https://github.com/rust-lang/rust/issues, quoting the full output of this command
+[HELP] to possibly apply more fixes, pass in the `--broken-code` flag
+[NOTE] original diagnostics will follow:
 ...
-[WARNING] failed to automatically apply fixes suggested by rustc to crate `foo`
-...
-I'm not a diagnostic.
-rustc exited abnormally: [..]
-Original diagnostics will follow.
-...
+
 "#]])
         .run();
 }
@@ -1767,7 +1877,7 @@ fn non_edition_lint_migration() {
 ...
 [..]use std::str::from_utf8;
 ...
-  = [NOTE] `#[warn(unused_imports)]` on by default
+  = [NOTE] `#[warn(unused_imports)]` [..]on by default
 ...
 "#]])
         .run();
@@ -2314,7 +2424,8 @@ fn fix_only_once_for_duplicates() {
             r#"
 macro_rules! foo {
     () => {
-        &1;
+        let x = Box::new(1);
+        std::mem::forget(&x);
     };
 }
 
@@ -2342,7 +2453,8 @@ fn main() {
 
 macro_rules! foo {
     () => {
-        let _ = &1;
+        let x = Box::new(1);
+        let _ = &x;
     };
 }
 
@@ -2361,8 +2473,6 @@ fn migrate_project_to_package() {
         .file(
             "Cargo.toml",
             r#"
-cargo-features = ["edition2024"]
-
 # Before project
 [ project ] # After project header
 # After project header line
@@ -2375,7 +2485,6 @@ edition = "2021"
         .build();
 
     p.cargo("fix --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2021 edition to 2024
 [FIXED] Cargo.toml (1 fix)
@@ -2388,8 +2497,6 @@ edition = "2021"
     assert_e2e().eq(
         p.read_file("Cargo.toml"),
         str![[r#"
-
-cargo-features = ["edition2024"]
 
 # Before project
 [ package ] # After project header
@@ -2408,8 +2515,6 @@ fn migrate_removes_project() {
         .file(
             "Cargo.toml",
             r#"
-cargo-features = ["edition2024"]
-
 # Before package
 [ package ] # After package header
 # After package header line
@@ -2429,7 +2534,6 @@ edition = "2021"
         .build();
 
     p.cargo("fix --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2021 edition to 2024
 [FIXED] Cargo.toml (1 fix)
@@ -2443,8 +2547,6 @@ edition = "2021"
         p.read_file("Cargo.toml"),
         str![[r#"
 
-cargo-features = ["edition2024"]
-
 # Before package
 [ package ] # After package header
 # After package header line
@@ -2456,14 +2558,71 @@ edition = "2021"
     );
 }
 
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn migrate_removes_project_for_script() {
+    let p = project()
+        .file(
+            "foo.rs",
+            r#"
+---
+# Before package
+[ package ] # After package header
+# After package header line
+name = "foo"
+edition = "2021"
+# After package table
+
+# Before project
+[ project ] # After project header
+# After project header line
+name = "foo"
+edition = "2021"
+# After project table
+---
+
+fn main() {
+}
+"#,
+        )
+        .build();
+
+    p.cargo("-Zscript fix --edition --allow-no-vcs --manifest-path foo.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stderr_data(str![[r#"
+[MIGRATING] foo.rs from 2021 edition to 2024
+[FIXED] foo.rs (1 fix)
+[CHECKING] foo v0.0.0 ([ROOT]/foo/foo.rs)
+[MIGRATING] foo.rs from 2021 edition to 2024
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    assert_e2e().eq(
+        p.read_file("foo.rs"),
+        str![[r#"
+
+---
+# Before package
+[ package ] # After package header
+# After package header line
+name = "foo"
+edition = "2021"
+# After project table
+---
+
+fn main() {
+}
+
+"#]],
+    );
+}
+
 #[cargo_test]
 fn migrate_rename_underscore_fields() {
     let p = project()
         .file(
             "Cargo.toml",
             r#"
-cargo-features = ["edition2024"]
-
 [workspace.dependencies]
 # Before default_features
 a = {path = "a", default_features = false}  # After default_features value
@@ -2531,7 +2690,6 @@ a = {path = "a", default_features = false}
         .build();
 
     p.cargo("fix --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
         .with_stderr_data(str![[r#"
 [MIGRATING] Cargo.toml from 2021 edition to 2024
 [FIXED] Cargo.toml (11 fixes)
@@ -2546,8 +2704,6 @@ a = {path = "a", default_features = false}
     assert_e2e().eq(
         p.read_file("Cargo.toml"),
         str![[r#"
-
-cargo-features = ["edition2024"]
 
 [workspace.dependencies]
 # Before default_features
@@ -2594,6 +2750,81 @@ a = {path = "a", default-features = false}
 # After build_dependencies line
 a = {path = "a", default-features = false}
 # After build_dependencies table
+
+"#]],
+    );
+}
+
+#[cargo_test]
+fn migrate_rename_underscore_fields_in_virtual_manifest() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["foo"]
+resolver = "2"
+
+[workspace.dependencies]
+# Before default_features
+a = {path = "a", default_features = false}  # After default_features value
+# After default_features line
+"#,
+        )
+        .file(
+            "foo/Cargo.toml",
+            r#"
+[package]
+name = "foo"
+edition = "2021"
+"#,
+        )
+        .file("foo/src/lib.rs", "")
+        .file(
+            "a/Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "0.0.1"
+                edition = "2015"
+            "#,
+        )
+        .file("a/src/lib.rs", "")
+        .build();
+
+    p.cargo("fix --edition --allow-no-vcs")
+        .with_stderr_data(str![[r#"
+[MIGRATING] Cargo.toml from 2021 edition to 2024
+[FIXED] Cargo.toml (1 fix)
+[MIGRATING] foo/Cargo.toml from 2021 edition to 2024
+[CHECKING] foo v0.0.0 ([ROOT]/foo/foo)
+[MIGRATING] foo/src/lib.rs from 2021 edition to 2024
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    assert_e2e().eq(
+        p.read_file("Cargo.toml"),
+        str![[r#"
+
+[workspace]
+members = ["foo"]
+resolver = "2"
+
+[workspace.dependencies]
+# Before default_features
+a = {path = "a", default-features = false}  # After default_features value
+# After default_features line
+
+"#]],
+    );
+    assert_e2e().eq(
+        p.read_file("foo/Cargo.toml"),
+        str![[r#"
+
+[package]
+name = "foo"
+edition = "2021"
 
 "#]],
     );
@@ -2691,7 +2922,6 @@ dep_df_false = { version = "0.1.0", default-features = false }
         .build();
 
     p.cargo("fix --all --edition --allow-no-vcs")
-        .masquerade_as_nightly_cargo(&["edition2024"])
         .with_stderr_data(
             str![[r#"
 [MIGRATING] pkg_default/Cargo.toml from 2021 edition to 2024
@@ -2699,7 +2929,7 @@ dep_df_false = { version = "0.1.0", default-features = false }
 [MIGRATING] pkg_df_false/Cargo.toml from 2021 edition to 2024
 [FIXED] pkg_df_false/Cargo.toml (6 fixes)
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep_simple v0.1.0 (registry `dummy-registry`)
 [DOWNLOADED] dep_df_true v0.1.0 (registry `dummy-registry`)
@@ -2747,5 +2977,292 @@ dep_df_true = { workspace = true}
 dep_df_false = { workspace = true, default-features = false }
 
 "#]],
+    );
+}
+
+#[cargo_test]
+fn fix_edition_skips_old_editions() {
+    // Checks that -Zfix-edition will skip things that are not 2024.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"[workspace]
+            members = ["e2021", "e2024"]
+            resolver = "3"
+            "#,
+        )
+        .file(
+            "e2021/Cargo.toml",
+            r#"
+            [package]
+            name = "e2021"
+            edition = "2021"
+            "#,
+        )
+        .file("e2021/src/lib.rs", "")
+        .file(
+            "e2024/Cargo.toml",
+            r#"
+                [package]
+                name = "e2024"
+                edition = "2024"
+            "#,
+        )
+        .file("e2024/src/lib.rs", "")
+        .build();
+
+    // Doing the whole workspace should skip since there is a 2021 in the mix.
+    p.cargo("fix -Zfix-edition=start=2024 -v")
+        .masquerade_as_nightly_cargo(&["fix-edition"])
+        .with_stderr_data(str![[r#"
+[SKIPPING] not all packages are at edition 2024
+
+"#]])
+        .run();
+
+    // Same with `end`.
+    p.cargo("fix -Zfix-edition=end=2024,future -v")
+        .masquerade_as_nightly_cargo(&["fix-edition"])
+        .with_stderr_data(str![[r#"
+[SKIPPING] not all packages are at edition 2024
+
+"#]])
+        .run();
+
+    // Doing an individual package at the correct edition should check it.
+    p.cargo("fix -Zfix-edition=start=2024 -p e2024")
+        .masquerade_as_nightly_cargo(&["fix-edition"])
+        .with_stderr_data(str![[r#"
+[CHECKING] e2024 v0.0.0 ([ROOT]/foo/e2024)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test(nightly, reason = "future edition is always unstable")]
+fn fix_edition_future() {
+    // Checks that the -Zfix-edition can work for the future.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            edition = "2024""#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("fix -Zfix-edition=end=2024,future")
+        .masquerade_as_nightly_cargo(&["fix-edition"])
+        .with_stderr_data(str![[r#"
+[MIGRATING] Cargo.toml from 2024 edition to future
+[CHECKING] foo v0.0.0 ([ROOT]/foo)
+[MIGRATING] src/lib.rs from 2024 edition to future
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+     Updated edition to future
+[CHECKING] foo v0.0.0 ([ROOT]/foo)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+    assert_e2e().eq(
+        p.read_file("Cargo.toml"),
+        str![[r#"
+cargo-features = ["unstable-editions"]
+
+            [package]
+            name = "foo"
+edition = "future"
+
+"#]],
+    );
+}
+
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn script_without_frontmatter() {
+    let p = cargo_test_support::project()
+        .file("echo.rs", "fn main() {}")
+        .build();
+
+    p.cargo("fix -Zscript --allow-no-vcs --manifest-path echo.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![""])
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to the latest edition (currently `[..]`)
+[HELP] to pin the edition, run `cargo fix --manifest-path [ROOT]/foo/echo.rs`
+[FIXED] echo.rs (1 fix)
+[CHECKING] echo v0.0.0 ([ROOT]/foo/echo.rs)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    assert_e2e().eq(
+        p.read_file("echo.rs"),
+        str![[r#"
+---
+[package]
+edition = "2024"
+---
+
+fn main() {}
+"#]],
+    );
+}
+
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn script_with_frontmatter() {
+    let p = cargo_test_support::project()
+        .file(
+            "echo.rs",
+            "#!/usr/bin/env cargo
+---
+[dependencies]
+---
+fn main() {}",
+        )
+        .build();
+
+    p.cargo("fix -Zscript --allow-no-vcs --manifest-path echo.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![""])
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to the latest edition (currently `[..]`)
+[HELP] to pin the edition, run `cargo fix --manifest-path [ROOT]/foo/echo.rs`
+[FIXED] echo.rs (1 fix)
+[CHECKING] echo v0.0.0 ([ROOT]/foo/echo.rs)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    assert_e2e().eq(
+        p.read_file("echo.rs"),
+        str![[r##"
+#!/usr/bin/env cargo
+---
+[package]
+edition = "2024"
+[dependencies]
+---
+fn main() {}
+"##]],
+    );
+}
+
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn script_with_package_table() {
+    let p = cargo_test_support::project()
+        .file(
+            "echo.rs",
+            r#"#!/usr/bin/env cargo
+---
+[package]
+name = "foo"
+---
+fn main() {}"#,
+        )
+        .build();
+
+    p.cargo("fix -Zscript --allow-no-vcs --manifest-path echo.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![""])
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to the latest edition (currently `[..]`)
+[HELP] to pin the edition, run `cargo fix --manifest-path [ROOT]/foo/echo.rs`
+[FIXED] echo.rs (1 fix)
+[CHECKING] foo v0.0.0 ([ROOT]/foo/echo.rs)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    assert_e2e().eq(
+        p.read_file("echo.rs"),
+        str![[r##"
+#!/usr/bin/env cargo
+---
+[package]
+name = "foo"
+edition = "2024"
+---
+fn main() {}
+"##]],
+    );
+}
+
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn script_with_package_dotted() {
+    let p = cargo_test_support::project()
+        .file(
+            "echo.rs",
+            r#"#!/usr/bin/env cargo
+---
+package.name = "foo"
+---
+fn main() {}"#,
+        )
+        .build();
+
+    p.cargo("fix -Zscript --allow-no-vcs --manifest-path echo.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![""])
+        .with_stderr_data(str![[r#"
+[WARNING] `package.edition` is unspecified, defaulting to the latest edition (currently `[..]`)
+[HELP] to pin the edition, run `cargo fix --manifest-path [ROOT]/foo/echo.rs`
+[FIXED] echo.rs (1 fix)
+[CHECKING] foo v0.0.0 ([ROOT]/foo/echo.rs)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    assert_e2e().eq(
+        p.read_file("echo.rs"),
+        str![[r##"
+#!/usr/bin/env cargo
+---
+package.name = "foo"
+package.edition = "2024"
+---
+fn main() {}
+"##]],
+    );
+}
+
+#[cargo_test(nightly, reason = "-Zscript is unstable")]
+fn script_with_edition() {
+    let p = cargo_test_support::project()
+        .file(
+            "echo.rs",
+            r#"#!/usr/bin/env cargo
+---
+package.edition = "2015"
+---
+fn main() {}"#,
+        )
+        .build();
+
+    p.cargo("fix -Zscript --allow-no-vcs --manifest-path echo.rs")
+        .masquerade_as_nightly_cargo(&["script"])
+        .with_stdout_data(str![""])
+        .with_stderr_data(str![[r#"
+[CHECKING] echo v0.0.0 ([ROOT]/foo/echo.rs)
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+
+    assert_e2e().eq(
+        p.read_file("echo.rs"),
+        str![[r##"
+#!/usr/bin/env cargo
+---
+package.edition = "2015"
+---
+fn main() {}
+"##]],
     );
 }

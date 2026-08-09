@@ -8,13 +8,14 @@
   ignorePaths: [
     '**/tests/**',
   ],
-  // See rust-lang/cargo#13546 and openssl/openssl#23376 for the exclusion
-  ignoreDeps: ['openssl', 'openssl-src', 'openssl-sys'],
+  // Ignore curl-sys, for now
+  // https://github.com/rust-lang/cargo/issues/16357
+  ignoreDeps: ['curl-sys'],
   customManagers: [
     {
       customType: 'regex',
-      fileMatch: [
-        'Cargo.toml$',
+      managerFilePatterns: [
+        '/Cargo.toml$/',
       ],
       matchStrings: [
         '\\bMSRV:1\\b.*?(?<currentValue>\\d+\\.\\d+(\\.\\d+)?)',
@@ -26,8 +27,8 @@
     },
     {
       customType: 'regex',
-      fileMatch: [
-        'Cargo.toml$',
+      managerFilePatterns: [
+        '/Cargo.toml$/',
       ],
       matchStrings: [
         '\\bMSRV:3\\b.*?(?<currentValue>\\d+\\.\\d+(\\.\\d+)?)',
@@ -35,6 +36,18 @@
       ],
       depNameTemplate: 'MSRV:3',  // Support 3 versions of rustc
       packageNameTemplate: 'rust-lang/rust',
+      datasourceTemplate: 'github-releases',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: [
+        '/^.github.workflows.main.yml$/',
+      ],
+      matchStrings: [
+        'cargo-semver-checks.releases.download.v(?<currentValue>\\d+\\.\\d+(\\.\\d+)?)',
+      ],
+      depNameTemplate: 'cargo-semver-checks',
+      packageNameTemplate: 'obi1kenobi/cargo-semver-checks',
       datasourceTemplate: 'github-releases',
     },
   ],
@@ -68,6 +81,20 @@
       minimumReleaseAge: '85 days',  // 2 releases back * 6 weeks per release * 7 days per week + 1
       internalChecksFilter: 'strict',
       groupName: 'msrv',
+    },
+    {
+      commitMessageTopic: 'cargo-semver-checks',
+      matchManagers: [
+        'custom.regex',
+      ],
+      matchDepNames: [
+        'cargo-semver-checks',
+      ],
+      extractVersion: '^v(?<version>\\d+\\.\\d+\\.\\d+)',
+      schedule: [
+        '* * * * *',
+      ],
+      internalChecksFilter: 'strict',
     },
     // Goals:
     // - Rollup safe upgrades to reduce CI runner load

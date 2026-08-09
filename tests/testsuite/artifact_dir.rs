@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::sleep_ms;
 use cargo_test_support::str;
 use cargo_test_support::{basic_manifest, project};
@@ -326,60 +326,40 @@ For more information, try '--help'.
 }
 
 #[cargo_test]
-fn deprecated_out_dir() {
+fn removed_out_dir_flag() {
     let p = project()
         .file("src/main.rs", r#"fn main() { println!("Hello, World!") }"#)
         .build();
 
     p.cargo("build -Z unstable-options --out-dir out")
         .masquerade_as_nightly_cargo(&["out-dir"])
+        .with_status(1)
         .enable_mac_dsym()
         .with_stderr_data(str![[r#"
-[WARNING] the --out-dir flag has been changed to --artifact-dir
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+[ERROR] unexpected argument '--out-dir' found
+
+  tip: a similar argument exists: '--artifact-dir'
+
+Usage: cargo[EXE] build [OPTIONS]
+
+For more information, try '--help'.
 
 "#]])
         .run();
-    check_dir_contents(
-        &p.root().join("out"),
-        &["foo"],
-        &["foo", "foo.dSYM"],
-        &["foo.exe", "foo.pdb"],
-        &["foo.exe"],
-    );
 }
 
 #[cargo_test]
-fn cargo_build_deprecated_out_dir() {
-    let p = project()
-        .file("src/main.rs", r#"fn main() { println!("Hello, World!") }"#)
-        .file(
-            ".cargo/config.toml",
-            r#"
-            [build]
-            out-dir = "out"
-            "#,
-        )
-        .build();
+fn artifact_dir_rejected_on_stable() {
+    let p = project().file("src/main.rs", "fn main() {}").build();
 
-    p.cargo("build -Z unstable-options")
-        .masquerade_as_nightly_cargo(&["out-dir"])
-        .enable_mac_dsym()
-        .with_stderr_data(str![[r#"
-[WARNING] the out-dir config option has been changed to artifact-dir
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+    p.cargo("build --artifact-dir out")
+        .with_status(101)
+        .with_stderr_data(str![[r#"[ERROR] the `--artifact-dir` flag is unstable, and only available on the nightly channel of Cargo, but this is the `stable` channel
+See https://doc.rust-lang.org/book/appendix-07-nightly-rust.html for more information about Rust release channels.
+See https://github.com/rust-lang/cargo/issues/6790 for more information about the `--artifact-dir` flag.
 
 "#]])
         .run();
-    check_dir_contents(
-        &p.root().join("out"),
-        &["foo"],
-        &["foo", "foo.dSYM"],
-        &["foo.exe", "foo.pdb"],
-        &["foo.exe"],
-    );
 }
 
 fn check_dir_contents(

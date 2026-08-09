@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cargo_test_support::cargo_process;
+use crate::prelude::*;
+use crate::utils::cargo_process;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::registry::{self, RegistryBuilder};
 use cargo_test_support::str;
 use cargo_test_support::t;
@@ -53,7 +53,7 @@ pub fn check_token(expected_token: Option<&str>, registry: Option<&str>) {
             .get("registry")
             .and_then(|registry_table| registry_table.get("token"))
             .and_then(|v| match v {
-                toml::Value::String(ref token) => Some(token.as_str().to_string()),
+                toml::Value::String(token) => Some(token.as_str().to_string()),
                 _ => None,
             }),
     };
@@ -81,7 +81,10 @@ fn registry_credentials() {
 
     let reg = "alternative";
 
-    cargo_process("login --registry").arg(reg).arg(TOKEN).run();
+    cargo_process("login --registry")
+        .arg(reg)
+        .with_stdin(TOKEN)
+        .run();
 
     // Ensure that we have not updated the default token
     check_token(Some(ORIGINAL_TOKEN), None);
@@ -92,7 +95,7 @@ fn registry_credentials() {
     let reg2 = "alternative2";
     cargo_process("login --registry")
         .arg(reg2)
-        .arg(TOKEN2)
+        .with_stdin(TOKEN2)
         .run();
 
     // Ensure not overwriting 1st alternate registry token with
@@ -127,8 +130,24 @@ Caused by:
 
     cargo_process("login")
         .replace_crates_io(registry.index_url())
-        .arg("")
+        .with_stdin("")
         .with_stderr_data(str![[r#"
+please paste the token found on [ROOTURL]/api/me below
+[ERROR] credential provider `cargo:token` failed action `login`
+
+Caused by:
+  please provide a non-empty token
+
+"#]])
+        .with_status(101)
+        .run();
+
+    cargo_process("login")
+        .replace_crates_io(registry.index_url())
+        .arg("")
+        .with_stdin("")
+        .with_stderr_data(str![[r#"
+[WARNING] `cargo login <token>` is deprecated in favor of reading `<token>` from stdin
 [ERROR] credential provider `cargo:token` failed action `login`
 
 Caused by:
@@ -317,7 +336,10 @@ k3.public.AmDwjlyf8jAV3gm5Z7Kz9xAOcsKslt_Vwp5v-emjFzBHLCtcANzTaVEghTNEMj9PkQ
         .with_stdin("k3.secret.fNYVuMvBgOlljt9TDohnaYLblghqaHoQquVZwgR6X12cBFHZLFsaU3q7X3k1Zn36")
         .run();
     let credentials = fs::read_to_string(&credentials).unwrap();
-    assert_eq!(credentials, "[registries.alternative]\nsecret-key = \"k3.secret.fNYVuMvBgOlljt9TDohnaYLblghqaHoQquVZwgR6X12cBFHZLFsaU3q7X3k1Zn36\"\n");
+    assert_eq!(
+        credentials,
+        "[registries.alternative]\nsecret-key = \"k3.secret.fNYVuMvBgOlljt9TDohnaYLblghqaHoQquVZwgR6X12cBFHZLFsaU3q7X3k1Zn36\"\n"
+    );
 }
 
 #[cargo_test]
@@ -356,7 +378,7 @@ fn default_registry_configured() {
     .unwrap();
 
     cargo_process("login")
-        .arg("a-new-token")
+        .with_stdin("a-new-token")
         .with_stderr_data(str![[r#"
 [UPDATING] `alternative` index
 [LOGIN] token for `alternative` saved

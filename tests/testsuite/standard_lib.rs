@@ -6,10 +6,11 @@
 
 use std::path::{Path, PathBuf};
 
-use cargo_test_support::prelude::*;
-use cargo_test_support::registry::{Dependency, Package};
+use crate::prelude::*;
 use cargo_test_support::ProjectBuilder;
-use cargo_test_support::{paths, project, rustc_host, str, Execs};
+use cargo_test_support::cross_compile;
+use cargo_test_support::registry::{Dependency, Package};
+use cargo_test_support::{Execs, paths, project, rustc_host, str};
 
 struct Setup {
     rustc_wrapper: PathBuf,
@@ -86,7 +87,7 @@ fn setup() -> Setup {
     let p = ProjectBuilder::new(paths::root().join("rustc-wrapper"))
         .file(
             "src/main.rs",
-            r#"
+            &r#"
                 use std::process::Command;
                 use std::env;
                 fn main() {
@@ -96,21 +97,18 @@ fn setup() -> Setup {
                     if is_sysroot_crate {
                         args.push("--sysroot".to_string());
                         args.push(env::var("REAL_SYSROOT").unwrap());
-                    } else if args.iter().any(|arg| arg == "--target") {
+                    } else if let Some(pos) = args.iter().position(|arg| arg == "--target") {
                         // build-std target unit
-                        //
-                        // This `--sysroot` is here to disable the sysroot lookup,
-                        // to ensure nothing is required.
-                        // See https://github.com/rust-lang/wg-cargo-std-aware/issues/31
-                        // for more information on this.
-                        //
-                        // FIXME: this is broken on x86_64-unknown-linux-gnu
-                        // due to https://github.com/rust-lang/rust/pull/124129,
-                        // because it requires lld in the sysroot. See
-                        // https://github.com/rust-lang/rust/issues/125246 for
-                        // more information.
-                        // args.push("--sysroot".to_string());
-                        // args.push("/path/to/nowhere".to_string());
+
+                        // Set --sysroot only when the target is host
+                        if args.iter().nth(pos + 1) == Some(&"__HOST_TARGET__".to_string()) {
+                            // This `--sysroot` is here to disable the sysroot lookup,
+                            // to ensure nothing is required.
+                            // See https://github.com/rust-lang/wg-cargo-std-aware/issues/31
+                            // for more information on this.
+                            args.push("--sysroot".to_string());
+                            args.push("/path/to/nowhere".to_string());
+                        }
                     } else {
                         // host unit, do not use sysroot
                     }
@@ -118,7 +116,8 @@ fn setup() -> Setup {
                     let ret = Command::new(&args[0]).args(&args[1..]).status().unwrap();
                     std::process::exit(ret.code().unwrap_or(1));
                 }
-            "#,
+            "#
+            .replace("__HOST_TARGET__", rustc_host()),
         )
         .build();
     p.cargo("build").run();
@@ -263,7 +262,7 @@ fn shared_std_dependency_rebuild() {
                 [build-dependencies]
                 dep_test = {{ path = \"{}/tests/testsuite/mock-std/dep_test\" }}
             ",
-                manifest_dir
+                manifest_dir.replace('\\', "/")
             )
             .as_str(),
         )
@@ -297,20 +296,16 @@ fn shared_std_dependency_rebuild() {
 "#]])
         .run();
 
-    // TODO: Because of the way in which std is resolved, it's mandatory that this is left commented
-    // out as it will fail. This case should result in `dep_test` only being built once, however
-    // it's still being built twice. This is a bug.
-    //
-    //    p.cargo("build -v")
-    //        .build_std(&setup)
-    //        .with_stderr_does_not_contain(str![[r#"
-    //...
-    //[RUNNING] `[..] rustc --crate-name dep_test [..]`
-    //...
-    //[RUNNING] `[..] rustc --crate-name dep_test [..]`
-    //...
-    //"#]])
-    //        .run();
+    p.cargo("build -v")
+        .build_std(&setup)
+        .with_stderr_does_not_contain(str![[r#"
+    ...
+    [RUNNING] `[..] rustc --crate-name dep_test [..]`
+    ...
+    [RUNNING] `[..] rustc --crate-name dep_test [..]`
+    ...
+    "#]])
+        .run();
 }
 
 #[cargo_test(build_std_mock)]
@@ -386,6 +381,106 @@ fn check_core() {
 [WARNING] function `unused_fn` is never used
 ...
 "#]])
+        .run();
+}
+
+#[cargo_test(build_std_mock)]
+fn build_std_with_no_arg_for_core_only_target() {
+    let target = "aarch64-unknown-none";
+    if !cross_compile::requires_target_installed(target) {
+        return;
+    }
+
+    let setup = setup();
+
+    let p = project()
+        .file(
+            "src/lib.rs",
+            r#"
+                #![no_std]
+                pub fn foo() {
+                    assert_eq!(u8::MIN, 0);
+                }
+            "#,
+        )
+        .build();
+
+    p.cargo("build -v")
+        .arg("--target")
+        .arg(target)
+        .build_std(&setup)
+        .with_stderr_data(
+            str![[r#"
+[UPDATING] `dummy-registry` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] registry-dep-using-std v1.0.0 (registry `dummy-registry`)
+[DOWNLOADED] registry-dep-using-core v1.0.0 (registry `dummy-registry`)
+[DOWNLOADED] registry-dep-using-alloc v1.0.0 (registry `dummy-registry`)
+[COMPILING] compiler_builtins v0.1.0 ([..]/library/compiler_builtins)
+[COMPILING] core v0.1.0 ([..]/library/core)
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[RUNNING] `[..] rustc --crate-name build_script_build [..]/compiler_builtins/build.rs [..]`
+[RUNNING] `[ROOT]/foo/target/debug/build/compiler_builtins-[HASH]/build-script-build`
+[RUNNING] `[..] rustc --crate-name compiler_builtins [..]--target aarch64-unknown-none[..]`
+[RUNNING] `[..] rustc --crate-name core [..]--target aarch64-unknown-none[..]`
+[RUNNING] `[..] rustc --crate-name foo [..]--target aarch64-unknown-none[..]`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]
+            .unordered(),
+        )
+        .run();
+
+    p.cargo("clean").run();
+
+    // Also work for a mix of std and core-only targets,
+    // though not sure how common it is...
+    //
+    // Note that we don't  download std dependencies for the second call
+    // because `-Zbuild-std` downloads them all also when building for core only.
+    p.cargo("build -v")
+        .arg("--target")
+        .arg(target)
+        .target_host()
+        .build_std(&setup)
+        .with_stderr_data(
+            str![[r#"
+[UPDATING] `dummy-registry` index
+[COMPILING] core v0.1.0 ([..]/library/core)
+[COMPILING] dep_test v0.1.0 ([..]/dep_test)
+[COMPILING] compiler_builtins v0.1.0 ([..]/library/compiler_builtins)
+[COMPILING] proc_macro v0.1.0 ([..]/library/proc_macro)
+[COMPILING] panic_unwind v0.1.0 ([..]/library/panic_unwind)
+[COMPILING] rustc-std-workspace-core v1.9.0 ([..]/library/rustc-std-workspace-core)
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[COMPILING] registry-dep-using-core v1.0.0
+[COMPILING] alloc v0.1.0 ([..]/library/alloc)
+[COMPILING] rustc-std-workspace-alloc v1.9.0 ([..]/library/rustc-std-workspace-alloc)
+[COMPILING] registry-dep-using-alloc v1.0.0
+[COMPILING] std v0.1.0 ([..]/library/std)
+[RUNNING] `[..] rustc --crate-name build_script_build [..]/compiler_builtins/build.rs [..]`
+[RUNNING] `[ROOT]/foo/target/debug/build/compiler_builtins-[HASH]/build-script-build`
+[RUNNING] `[ROOT]/foo/target/debug/build/compiler_builtins-[HASH]/build-script-build`
+[RUNNING] `[..]rustc --crate-name compiler_builtins [..]--target aarch64-unknown-none[..]`
+[RUNNING] `[..]rustc --crate-name core [..]--target aarch64-unknown-none[..]`
+[RUNNING] `[..]rustc --crate-name foo [..]--target aarch64-unknown-none[..]`
+[RUNNING] `[..]rustc --crate-name core [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name dep_test [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name proc_macro [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name panic_unwind [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name compiler_builtins [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name rustc_std_workspace_core [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name registry_dep_using_core [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name alloc [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name rustc_std_workspace_alloc [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name registry_dep_using_alloc [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name std [..]--target [HOST_TARGET][..]`
+[RUNNING] `[..]rustc --crate-name foo [..]--target [HOST_TARGET][..]`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]]
+            .unordered(),
+        )
         .run();
 }
 
@@ -567,7 +662,7 @@ fn doctest() {
         )
         .build();
 
-    p.cargo("test --doc -v -Zdoctest-xcompile")
+    p.cargo("test --doc -v")
         .build_std(&setup)
         .with_stdout_data(str![[r#"
 
@@ -603,7 +698,7 @@ fn no_implicit_alloc() {
         .target_host()
         .with_stderr_data(str![[r#"
 ...
-error[E0433]: failed to resolve: use of undeclared crate or module `alloc`
+error[E0433]: cannot find module or crate `alloc` in this scope
 ...
 "#]])
         .with_status(101)
@@ -652,12 +747,14 @@ fn ignores_incremental() {
         .map(|e| e.unwrap())
         .collect();
     assert_eq!(incremental.len(), 1);
-    assert!(incremental[0]
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .starts_with("foo-"));
+    assert!(
+        incremental[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("foo-")
+    );
 }
 
 #[cargo_test(build_std_mock)]
@@ -773,4 +870,23 @@ fn fetch() {
         .target_host()
         .with_stderr_does_not_contain("[DOWNLOADED] [..]")
         .run();
+}
+
+#[cargo_test(build_std_mock)]
+fn std_build_script_metadata_propagate_to_user() {
+    let setup = setup();
+
+    let p = project()
+        .file("src/lib.rs", "")
+        .file(
+            "build.rs",
+            r#"
+            fn main() {
+                assert_eq!(std::env::var("DEP_COMPILER_RT_COMPILER_RT").unwrap(), "foo");
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("check").build_std(&setup).target_host().run();
 }

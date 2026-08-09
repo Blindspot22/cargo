@@ -2,14 +2,18 @@
 //!
 //! See `cargo_test_support::cross_compile` for more detail.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::rustc_host;
 use cargo_test_support::str;
 use cargo_test_support::{basic_bin_manifest, basic_manifest, cross_compile, project};
 
+use crate::utils::cross_compile::{
+    can_run_on_host as cross_compile_can_run_on_host, disabled as cross_compile_disabled,
+};
+
 #[cargo_test]
 fn simple_cross() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -54,14 +58,14 @@ fn simple_cross() {
     p.cargo("build -v --target").arg(&target).run();
     assert!(p.target_bin(target, "foo").is_file());
 
-    if cross_compile::can_run_on_host() {
+    if cross_compile_can_run_on_host() {
         p.process(&p.target_bin(target, "foo")).run();
     }
 }
 
 #[cargo_test]
 fn simple_cross_config() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -116,14 +120,97 @@ fn simple_cross_config() {
     p.cargo("build -v").run();
     assert!(p.target_bin(target, "foo").is_file());
 
-    if cross_compile::can_run_on_host() {
+    if cross_compile_can_run_on_host() {
         p.process(&p.target_bin(target, "foo")).run();
     }
 }
 
 #[cargo_test]
+fn target_host_arg() {
+    if cross_compile_disabled() {
+        return;
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.0"
+                edition = "2015"
+                authors = []
+                build = "build.rs"
+            "#,
+        )
+        .file(
+            "build.rs",
+            &format!(
+                r#"
+                    fn main() {{
+                        assert_eq!(std::env::var("TARGET").unwrap(), "{}");
+                    }}
+                "#,
+                rustc_host()
+            ),
+        )
+        .file("src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build -v --target host-tuple")
+        .with_stderr_contains("[RUNNING] `rustc [..] --target [HOST_TARGET] [..]`")
+        .run();
+}
+
+#[cargo_test]
+fn target_host_config() {
+    if cross_compile_disabled() {
+        return;
+    }
+
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                    [build]
+                    target = "host-tuple"
+                "#,
+            ),
+        )
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.0"
+                edition = "2015"
+                authors = []
+                build = "build.rs"
+            "#,
+        )
+        .file(
+            "build.rs",
+            &format!(
+                r#"
+                    fn main() {{
+                        assert_eq!(std::env::var("TARGET").unwrap(), "{}");
+                    }}
+                "#,
+                rustc_host()
+            ),
+        )
+        .file("src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build -v")
+        .with_stderr_contains("[RUNNING] `rustc [..] --target [HOST_TARGET] [..]`")
+        .run();
+}
+
+#[cargo_test]
 fn simple_deps() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -153,7 +240,7 @@ fn simple_deps() {
     p.cargo("build --target").arg(&target).run();
     assert!(p.target_bin(target, "foo").is_file());
 
-    if cross_compile::can_run_on_host() {
+    if cross_compile_can_run_on_host() {
         p.process(&p.target_bin(target, "foo")).run();
     }
 }
@@ -165,7 +252,7 @@ fn per_crate_target_test(
     forced_target: Option<&'static str>,
     arg_target: Option<&'static str>,
 ) {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -226,7 +313,7 @@ fn per_crate_target_test(
         .run();
     assert!(p.target_bin(cross_compile::alternate(), "foo").is_file());
 
-    if cross_compile::can_run_on_host() {
+    if cross_compile_can_run_on_host() {
         p.process(&p.target_bin(cross_compile::alternate(), "foo"))
             .run();
     }
@@ -262,7 +349,7 @@ fn per_crate_forced_target_does_not_get_overridden() {
 
 #[cargo_test]
 fn workspace_with_multiple_targets() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -360,7 +447,7 @@ fn workspace_with_multiple_targets() {
     assert!(p.target_bin(cross_compile::alternate(), "cross").is_file());
 
     p.process(&p.bin("native")).run();
-    if cross_compile::can_run_on_host() {
+    if cross_compile_can_run_on_host() {
         p.process(&p.target_bin(cross_compile::alternate(), "cross"))
             .run();
     }
@@ -368,7 +455,7 @@ fn workspace_with_multiple_targets() {
 
 #[cargo_test]
 fn linker() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -403,8 +490,9 @@ fn linker() {
         .arg(&target)
         .with_status(101)
         .with_stderr_data(str![[r#"
-[WARNING] path `src/foo.rs` was erroneously implicitly accepted for binary `foo`,
+[WARNING] Cargo.toml: path `src/foo.rs` was erroneously implicitly accepted for binary `foo`,
 please set bin.path in Cargo.toml
+[WARNING] `foo` (manifest) generated 1 warning
 [COMPILING] foo v0.5.0 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo --edition=2015 src/foo.rs [..]--crate-type bin --emit=[..]link[..]-C debuginfo=2 [..] -C metadata=[..] --out-dir [ROOT]/foo/target/[ALT_TARGET]/debug/deps --target [ALT_TARGET] -C linker=my-linker-tool -L dependency=[ROOT]/foo/target/[ALT_TARGET]/debug/deps -L dependency=[ROOT]/foo/target/debug/deps`
 [ERROR] linker `my-linker-tool` not found
@@ -415,7 +503,7 @@ please set bin.path in Cargo.toml
 
 #[cargo_test]
 fn cross_tests() {
-    if !cross_compile::can_run_on_host() {
+    if !cross_compile_can_run_on_host() {
         return;
     }
 
@@ -452,6 +540,11 @@ fn cross_tests() {
             "src/lib.rs",
             &format!(
                 r#"
+                    //! ```
+                    //! extern crate foo;
+                    //! assert!(true);
+                    //! ```
+
                     use std::env;
                     pub fn foo() {{ assert_eq!(env::consts::ARCH, "{}"); }}
                     #[test] fn test_foo() {{ foo() }}
@@ -469,6 +562,7 @@ fn cross_tests() {
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 [RUNNING] unittests src/lib.rs (target/[ALT_TARGET]/debug/deps/foo-[HASH][EXE])
 [RUNNING] unittests src/bin/bar.rs (target/[ALT_TARGET]/debug/deps/bar-[HASH][EXE])
+[DOCTEST] foo
 
 "#]])
         .with_stdout_data(str![[r#"
@@ -485,63 +579,6 @@ test test ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
 
 
-"#]])
-        .run();
-}
-
-#[cargo_test]
-fn no_cross_doctests() {
-    if cross_compile::disabled() {
-        return;
-    }
-
-    let p = project()
-        .file(
-            "src/lib.rs",
-            r#"
-                //! ```
-                //! extern crate foo;
-                //! assert!(true);
-                //! ```
-            "#,
-        )
-        .build();
-
-    let host_output = "\
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-[RUNNING] unittests src/lib.rs (target/debug/deps/foo-[HASH][EXE])
-[DOCTEST] foo
-";
-
-    println!("a");
-    p.cargo("test").with_stderr_data(host_output).run();
-
-    println!("b");
-    let target = rustc_host();
-    p.cargo("test -v --target")
-        .arg(&target)
-        // Unordered since the two `rustc` invocations happen concurrently.
-        .with_stderr_data(
-            str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `rustc --crate-name foo [..]--crate-type lib[..]
-[RUNNING] `rustc --crate-name foo [..]--test[..]
-[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-[RUNNING] `[ROOT]/foo/target/[HOST_TARGET]/debug/deps/foo-[HASH][EXE]`
-[DOCTEST] foo
-[RUNNING] `rustdoc [..]--target [HOST_TARGET][..]`
-
-"#]]
-            .unordered(),
-        )
-        .with_stdout_data(str![[r#"
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [ELAPSED]s
-
-
 running 1 test
 test src/lib.rs - (line 2) ... ok
 
@@ -550,46 +587,11 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 "#]])
         .run();
-
-    println!("c");
-    let target = cross_compile::alternate();
-
-    // This will build the library, but does not build or run doc tests.
-    // This should probably be a warning or error.
-    p.cargo("test -v --doc --target")
-        .arg(&target)
-        .with_stderr_data(str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `rustc --crate-name foo [..]
-[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-[NOTE] skipping doctests for foo v0.0.1 ([ROOT]/foo) (lib), cross-compilation doctests are not yet supported
-See https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#doctest-xcompile for more information.
-
-"#]])
-        .run();
-
-    if !cross_compile::can_run_on_host() {
-        return;
-    }
-
-    // This tests the library, but does not run the doc tests.
-    p.cargo("test -v --target")
-        .arg(&target)
-        .with_stderr_data(str![[r#"
-[COMPILING] foo v0.0.1 ([ROOT]/foo)
-[RUNNING] `rustc --crate-name foo [..]--test[..]
-[FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
-[RUNNING] `[ROOT]/foo/target/[ALT_TARGET]/debug/deps/foo-[HASH][EXE]`
-[NOTE] skipping doctests for foo v0.0.1 ([ROOT]/foo) (lib), cross-compilation doctests are not yet supported
-See https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#doctest-xcompile for more information.
-
-"#]])
-        .run();
 }
 
 #[cargo_test]
 fn simple_cargo_run() {
-    if !cross_compile::can_run_on_host() {
+    if !cross_compile_can_run_on_host() {
         return;
     }
 
@@ -614,7 +616,7 @@ fn simple_cargo_run() {
 
 #[cargo_test]
 fn cross_with_a_build_script() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -675,7 +677,7 @@ fn cross_with_a_build_script() {
 
 #[cargo_test]
 fn build_script_needed_for_host_and_target() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -731,7 +733,9 @@ fn build_script_needed_for_host_and_target() {
                 use std::env;
                 fn main() {
                     let target = env::var("TARGET").unwrap();
-                    println!("cargo::rustc-flags=-L /path/to/{}", target);
+                    let root = std::env::current_dir().unwrap();
+                    let root = root.parent().unwrap().join(format!("link-{target}"));
+                    println!("cargo::rustc-flags=-L {}", root.display());
                 }
             "#,
         )
@@ -757,11 +761,13 @@ fn build_script_needed_for_host_and_target() {
         ",
         )
         .build();
+    p.root().join(format!("link-{target}")).mkdir_p();
+    p.root().join(format!("link-{}", rustc_host())).mkdir_p();
 
     p.cargo("build -v --target")
         .arg(&target)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] d1 v0.0.0 ([ROOT]/foo/d1)
 [RUNNING] `rustc [..] d1/build.rs [..] --out-dir [ROOT]/foo/target/debug/build/d1-[HASH] [..]
 [RUNNING] `[ROOT]/foo/target/debug/build/d1-[HASH]/build-script-build`
@@ -769,11 +775,11 @@ fn build_script_needed_for_host_and_target() {
 [RUNNING] `rustc [..] d1/src/lib.rs [..] --out-dir [ROOT]/foo/target/debug/deps [..]
 [RUNNING] `rustc [..] d1/src/lib.rs [..] --out-dir [ROOT]/foo/target/[ALT_TARGET]/debug/deps [..]
 [COMPILING] d2 v0.0.0 ([ROOT]/foo/d2)
-[RUNNING] `rustc [..] d2/src/lib.rs [..] --out-dir [ROOT]/foo/target/debug/deps [..]
+[RUNNING] `rustc [..] d2/src/lib.rs [..] --out-dir [ROOT]/foo/target/debug/deps [..]-L [ROOT]/foo/link-[HOST_TARGET]`
 [COMPILING] foo v0.0.0 ([ROOT]/foo)
-[RUNNING] `rustc [..] build.rs [..] --out-dir [ROOT]/foo/target/debug/build/foo-[HASH] [..]
+[RUNNING] `rustc [..] build.rs [..] --out-dir [ROOT]/foo/target/debug/build/foo-[HASH] [..]-L [ROOT]/foo/link-[HOST_TARGET]`
 [RUNNING] `[ROOT]/foo/target/debug/build/foo-[HASH]/build-script-build`
-[RUNNING] `rustc [..] src/main.rs [..] --out-dir [ROOT]/foo/target/[ALT_TARGET]/debug/deps --target [ALT_TARGET] [..]
+[RUNNING] `rustc [..] src/main.rs [..] --out-dir [ROOT]/foo/target/[ALT_TARGET]/debug/deps --target [ALT_TARGET] [..]-L [ROOT]/foo/link-[ALT_TARGET]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]].unordered())
@@ -782,7 +788,7 @@ fn build_script_needed_for_host_and_target() {
 
 #[cargo_test]
 fn build_deps_for_the_right_arch() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -827,7 +833,7 @@ fn build_deps_for_the_right_arch() {
 
 #[cargo_test]
 fn build_script_only_host() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -880,7 +886,7 @@ fn build_script_only_host() {
 
 #[cargo_test]
 fn build_script_with_platform_specific_dependencies() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -937,7 +943,7 @@ fn build_script_with_platform_specific_dependencies() {
     p.cargo("build -v --target")
         .arg(&target)
         .with_stderr_data(str![[r#"
-[LOCKING] 2 packages to latest compatible versions
+[LOCKING] 2 packages to highest compatible versions
 [COMPILING] d2 v0.0.0 ([ROOT]/foo/d2)
 [RUNNING] `rustc [..] d2/src/lib.rs [..]`
 [COMPILING] d1 v0.0.0 ([ROOT]/foo/d1)
@@ -954,7 +960,7 @@ fn build_script_with_platform_specific_dependencies() {
 
 #[cargo_test]
 fn platform_specific_dependencies_do_not_leak() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -1014,7 +1020,7 @@ error[E0463]: can't find crate for `d2`
 
 #[cargo_test]
 fn platform_specific_variables_reflected_in_build_scripts() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -1113,7 +1119,7 @@ fn platform_specific_variables_reflected_in_build_scripts() {
     ignore = "don't have a dylib cross target on macos"
 )]
 fn cross_test_dylib() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -1188,7 +1194,7 @@ fn cross_test_dylib() {
     p.cargo("test --target")
         .arg(&target)
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.0.1 ([ROOT]/foo/bar)
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
 [FINISHED] `test` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1214,9 +1220,9 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         .run();
 }
 
-#[cargo_test(nightly, reason = "-Zdoctest-xcompile is unstable")]
+#[cargo_test]
 fn doctest_xcompile_linker() {
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
 
@@ -1245,10 +1251,9 @@ fn doctest_xcompile_linker() {
         .build();
 
     // Fails because `my-linker-tool` doesn't actually exist.
-    p.cargo("test --doc -v -Zdoctest-xcompile --target")
+    p.cargo("test --doc -v --target")
         .arg(&target)
         .with_status(101)
-        .masquerade_as_nightly_cargo(&["doctest-xcompile"])
         .with_stderr_data(str![[r#"
 [COMPILING] foo v0.1.0 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo --edition=2015 src/lib.rs [..] --out-dir [ROOT]/foo/target/[ALT_TARGET]/debug/deps --target [ALT_TARGET] [..]
@@ -1258,5 +1263,111 @@ fn doctest_xcompile_linker() {
 [ERROR] doctest failed, to rerun pass `--doc`
 
 "#]])
+        .run();
+}
+
+#[cargo_test]
+fn always_emit_warnings_as_warnings_when_learning_target_info() {
+    if cross_compile_disabled() {
+        return;
+    }
+
+    let target = "wasm32-unknown-unknown";
+    if !cross_compile::requires_target_installed(target) {
+        return;
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                edition = "2015"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build -v --target")
+        .env("RUSTFLAGS", "-Awarnings")
+        .arg(target)
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.0 ([ROOT]/foo)
+[RUNNING] `rustc --crate-name foo [..]-Awarnings[..]`
+[FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
+
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn host_linker_does_not_apply_to_binary_build() {
+    // `host.linker` should only apply to build scripts, not to normal binary builds.
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+                [host]
+                linker = "nonexistent-host-linker"
+                [target.{target}]
+                linker = "nonexistent-target-linker"
+                "#,
+            ),
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build -Z target-applies-to-host -Z host-config --target")
+        .arg(&target)
+        .masquerade_as_nightly_cargo(&["target-applies-to-host", "host-config"])
+        .with_status(101)
+        // Need to omit some MSVC-specific diagnostics
+        // because rustc prints extra stuff when linker was not found.
+        // https://github.com/rust-lang/rust/blob/7ad4e69ad585d8ff214f7b42d01f1959eda08f40/compiler/rustc_codegen_ssa/src/back/link.rs?plain=1#L971-L975
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[ERROR] linker `nonexistent-target-linker` not found
+  |
+  = [NOTE] [NOT_FOUND]
+...
+"#]])
+        .run();
+
+    // with target-applies-to-host=false,
+    // host.linker should not be applied but target.linker
+    p.cargo("build -Z target-applies-to-host -Z host-config")
+        .masquerade_as_nightly_cargo(&["target-applies-to-host", "host-config"])
+        .env("CARGO_TARGET_APPLIES_TO_HOST", "false")
+        .with_status(101)
+        // Need to omit some MSVC-specific diagnostics
+        // because rustc prints extra stuff when linker was not found.
+        // https://github.com/rust-lang/rust/blob/7ad4e69ad585d8ff214f7b42d01f1959eda08f40/compiler/rustc_codegen_ssa/src/back/link.rs?plain=1#L971-L975
+        .with_stderr_data(str![[r#"
+[COMPILING] foo v0.0.1 ([ROOT]/foo)
+[ERROR] linker `nonexistent-target-linker` not found
+  |
+  = [NOTE] [NOT_FOUND]
+...
+"#]])
+        .run();
+}
+
+#[cargo_test]
+fn cross_with_host_config() {
+    if cross_compile_disabled() {
+        return;
+    }
+
+    let target = cross_compile::alternate();
+
+    let p = project().file("src/main.rs", "fn main() {}").build();
+
+    p.cargo("build -Z target-applies-to-host -Z host-config --target")
+        .arg(&target)
+        .masquerade_as_nightly_cargo(&["target-applies-to-host", "host-config"])
+        .with_status(0)
         .run();
 }

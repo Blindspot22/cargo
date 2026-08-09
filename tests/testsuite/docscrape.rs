@@ -1,6 +1,6 @@
 //! Tests for the `cargo doc` command with `-Zrustdoc-scrape-examples`.
 
-use cargo_test_support::prelude::*;
+use crate::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::str;
 
@@ -116,7 +116,7 @@ impl Foo {
         .masquerade_as_nightly_cargo(&["rustdoc-scrape-examples"])
         .with_stderr_data(
             str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] a v0.0.1 ([ROOT]/foo/crates/a)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [SCRAPING] foo v0.0.1 ([ROOT]/foo)
@@ -612,7 +612,7 @@ fn no_scrape_with_dev_deps() {
     p.cargo("doc -Zunstable-options -Z rustdoc-scrape-examples")
         .masquerade_as_nightly_cargo(&["rustdoc-scrape-examples"])
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [WARNING] Rustdoc did not scrape the following examples because they require dev-dependencies: ex
     If you want Rustdoc to scrape these examples, then add `doc-scrape-examples = true`
     to the [[example]] target configuration of at least one example.
@@ -682,7 +682,7 @@ fn use_dev_deps_if_explicitly_enabled() {
         .masquerade_as_nightly_cargo(&["rustdoc-scrape-examples"])
         .with_stderr_data(
             str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] a v0.0.1 ([ROOT]/foo/a)
 [CHECKING] foo v0.0.1 ([ROOT]/foo)
 [SCRAPING] foo v0.0.1 ([ROOT]/foo)
@@ -698,7 +698,7 @@ fn use_dev_deps_if_explicitly_enabled() {
 
 #[cargo_test(nightly, reason = "rustdoc scrape examples flags are unstable")]
 fn only_scrape_documented_targets() {
-    // package bar has doc = false and should not be eligible for documtation.
+    // package bar has doc = false and should not be eligible for documentation.
     let p = project()
         .file(
             "Cargo.toml",

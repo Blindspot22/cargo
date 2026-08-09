@@ -1,10 +1,11 @@
 //! Network tests for https transport.
 //!
-//! Note that these tests will generally require setting CARGO_CONTAINER_TESTS
-//! or CARGO_PUBLIC_NETWORK_TESTS.
+//! Note that these tests will generally require setting `CARGO_CONTAINER_TESTS`
+//! or `CARGO_PUBLIC_NETWORK_TESTS`.
 
+use crate::prelude::*;
+use crate::utils::cargo_process;
 use cargo_test_support::containers::Container;
-use cargo_test_support::prelude::*;
 use cargo_test_support::project;
 use cargo_test_support::str;
 
@@ -33,7 +34,7 @@ fn self_signed_should_fail() {
         .build();
     // I think the text here depends on the curl backend.
     let err_msg = if cfg!(target_os = "macos") {
-        "untrusted connection error; class=Ssl (16); code=Certificate (-17)"
+        "untrusted connection error; class=Ssl (16)[..]"
     } else if cfg!(unix) {
         "the SSL certificate is invalid; class=Ssl (16)[..]"
     } else if cfg!(windows) {
@@ -52,7 +53,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update https://127.0.0.1:[..]/repos/bar.git
+  unable to update https://127.0.0.1:[..]/repos/bar.git
 
 Caused by:
   failed to clone into: [ROOT]/home/.cargo/git/db/bar-[HASH]
@@ -131,7 +132,7 @@ fn self_signed_with_cacert() {
     p.cargo("fetch")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `https://127.0.0.1:[..]/repos/bar.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
 "#]])
         .run();
@@ -158,8 +159,24 @@ fn github_works() {
     p.cargo("fetch")
         .with_stderr_data(str![[r#"
 [UPDATING] git repository `https://github.com/rust-lang/bitflags.git`
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 
+"#]])
+        .run();
+}
+
+#[cargo_test(public_network_test)]
+fn github_works_cargo_install() {
+    cargo_process("install --git https://github.com/rust-lang/bitflags.git bitflags-smoke-test")
+        .with_stderr_data(str![[r#"
+[UPDATING] git repository `https://github.com/rust-lang/bitflags.git`
+[INSTALLING] bitflags-smoke-test [..]
+[WARNING] Cargo.toml: unused manifest key: dependencies.bitflags.all-features
+[WARNING] `bitflags-smoke-test` (manifest) generated 1 warning
+[LOCKING] 1 package to highest compatible version
+...
+[INSTALLED] package [..]
+...
 "#]])
         .run();
 }

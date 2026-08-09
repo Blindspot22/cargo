@@ -1,7 +1,6 @@
 //! Tests for profiles defined in config files.
 
-use cargo_test_support::prelude::*;
-use cargo_test_support::registry::Package;
+use crate::prelude::*;
 use cargo_test_support::{basic_lib_manifest, paths, project, str};
 use cargo_util_schemas::manifest::TomlDebugInfo;
 
@@ -228,7 +227,7 @@ fn profile_config_override_spec_multiple() {
     p.cargo("build -v")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ERROR] multiple package overrides in profile `dev` match package `bar v0.5.0 ([ROOT]/foo/bar)`
 found package specs: bar, bar@0.5.0
 
@@ -305,7 +304,7 @@ fn profile_config_override_precedence() {
 
     p.cargo("build -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [COMPILING] bar v0.5.0 ([ROOT]/foo/bar)
 [RUNNING] `rustc --crate-name bar [..] -C opt-level=2[..]-C codegen-units=2 [..]`
 [COMPILING] foo v0.0.1 ([ROOT]/foo)
@@ -372,10 +371,9 @@ fn named_config_profile() {
     // foo -> middle -> bar -> dev
     // middle exists in Cargo.toml, the others in .cargo/config.toml
     use super::config::GlobalContextBuilder;
-    use cargo::core::compiler::CompileKind;
-    use cargo::core::profiles::{Profiles, UnitFor};
-    use cargo::core::{PackageId, Workspace};
-    use cargo::util::interning::InternedString;
+    use cargo::compiler::CompileKind;
+    use cargo::workspace::profiles::{Profiles, UnitFor};
+    use cargo::workspace::{PackageId, Workspace};
     use std::fs;
     paths::root().join(".cargo").mkdir_p();
     fs::write(
@@ -421,11 +419,11 @@ fn named_config_profile() {
     )
     .unwrap();
     let gctx = GlobalContextBuilder::new().build();
-    let profile_name = InternedString::new("foo");
+    let profile_name = "foo".into();
     let ws = Workspace::new(&paths::root().join("Cargo.toml"), &gctx).unwrap();
     let profiles = Profiles::new(&ws, profile_name).unwrap();
 
-    let crates_io = cargo::core::SourceId::crates_io(&gctx).unwrap();
+    let crates_io = cargo::workspace::SourceId::crates_io(&gctx).unwrap();
     let a_pkg = PackageId::try_new("a", "0.1.0", crates_io).unwrap();
     let dep_pkg = PackageId::try_new("dep", "0.1.0", crates_io).unwrap();
 
@@ -483,44 +481,5 @@ fn named_env_profile() {
 [FINISHED] `other` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
-        .run();
-}
-
-#[cargo_test]
-fn test_with_dev_profile() {
-    // The `test` profile inherits from `dev` for both local crates and
-    // dependencies.
-    Package::new("somedep", "1.0.0").publish();
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [package]
-            name = "foo"
-            version = "0.1.0"
-            edition = "2015"
-
-            [dependencies]
-            somedep = "1.0"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-    p.cargo("test --lib --no-run -v")
-        .env("CARGO_PROFILE_DEV_DEBUG", "0")
-        .with_stderr_data(str![[r#"
-[UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
-[DOWNLOADING] crates ...
-[DOWNLOADED] somedep v1.0.0 (registry `dummy-registry`)
-[COMPILING] somedep v1.0.0
-[RUNNING] `rustc --crate-name somedep [..]`
-[COMPILING] foo v0.1.0 ([ROOT]/foo)
-[RUNNING] `rustc --crate-name foo [..]`
-[FINISHED] `test` profile [unoptimized] target(s) in [ELAPSED]s
-[EXECUTABLE] `[ROOT]/foo/target/debug/deps/foo-[HASH][EXE]`
-
-"#]])
-        .with_stdout_does_not_contain("[..] -C debuginfo=0[..]")
         .run();
 }

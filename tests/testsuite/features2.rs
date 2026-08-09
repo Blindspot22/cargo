@@ -2,13 +2,15 @@
 
 use std::fs::File;
 
-use cargo_test_support::cross_compile::{self, alternate};
+use crate::prelude::*;
+use crate::utils::cargo_process;
+use crate::utils::cross_compile::disabled as cross_compile_disabled;
+use cargo_test_support::cross_compile::alternate;
 use cargo_test_support::paths;
-use cargo_test_support::prelude::*;
 use cargo_test_support::publish::validate_crate_contents;
 use cargo_test_support::registry::{Dependency, Package};
 use cargo_test_support::str;
-use cargo_test_support::{basic_manifest, cargo_process, project, rustc_host, Project};
+use cargo_test_support::{Project, basic_manifest, project, rustc_host};
 
 /// Switches Cargo.toml to use `resolver = "2"`.
 pub fn switch_to_resolver_2(p: &Project) {
@@ -263,7 +265,7 @@ common
 #[cargo_test]
 fn itarget_proc_macro() {
     // itarget inside a proc-macro while cross-compiling
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
     Package::new("hostdep", "1.0.0").publish();
@@ -908,7 +910,7 @@ fn required_features_host_dep() {
     p.cargo("run")
         .with_status(101)
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [ERROR] target `x` in package `foo` requires the features: `bdep/f1`
 Consider enabling them by passing, e.g., `--features="bdep/f1"`
 
@@ -1026,7 +1028,7 @@ fn required_features_inactive_dep() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
 "#]])
@@ -1124,10 +1126,11 @@ it is true
         .run();
     p.cargo("test --doc").env("TEST_EXPECTS_ENABLED", "1").run();
     p.cargo("doc").run();
-    assert!(p
-        .build_dir()
-        .join("doc/common/constant.FEAT_ONLY_CONST.html")
-        .exists());
+    assert!(
+        p.build_dir()
+            .join("doc/common/constant.FEAT_ONLY_CONST.html")
+            .exists()
+    );
     // cargo doc should clean in-between runs, but it doesn't, and leaves stale files.
     // https://github.com/rust-lang/cargo/issues/6783 (same for removed items)
     p.build_dir().join("doc").rm_rf();
@@ -1143,10 +1146,11 @@ it is false
 
     p.cargo("test --doc").run();
     p.cargo("doc").run();
-    assert!(!p
-        .build_dir()
-        .join("doc/common/constant.FEAT_ONLY_CONST.html")
-        .exists());
+    assert!(
+        !p.build_dir()
+            .join("doc/common/constant.FEAT_ONLY_CONST.html")
+            .exists()
+    );
 }
 
 #[cargo_test]
@@ -1279,7 +1283,7 @@ fn has_dev_dep_for_test() {
 
     p.cargo("check -v")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] foo v0.1.0 ([ROOT]/foo)
 [RUNNING] `rustc --crate-name foo [..]`
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
@@ -1312,7 +1316,7 @@ fn has_dev_dep_for_test() {
 #[cargo_test]
 fn build_dep_activated() {
     // Build dependencies always match the host for [target.*.build-dependencies].
-    if cross_compile::disabled() {
+    if cross_compile_disabled() {
         return;
     }
     Package::new("somedep", "1.0.0")
@@ -1391,7 +1395,7 @@ fn resolver_bad_setting() {
 [ERROR] failed to parse manifest at `[ROOT]/foo/Cargo.toml`
 
 Caused by:
-  `resolver` setting `foo` is not valid, valid options are "1" or "2"
+  `resolver` setting `foo` is not valid, valid options are "1", "2" or "3"
 
 "#]])
         .run();
@@ -1549,9 +1553,10 @@ fn edition_2021_workspace_member() {
 
     p.cargo("check").with_stderr_data(str![[r#"
 [WARNING] virtual workspace defaulting to `resolver = "1"` despite one or more workspace members being on edition 2021 which implies `resolver = "2"`
-[NOTE] to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
-[NOTE] to use the edition 2021 resolver, specify `workspace.resolver = "2"` in the workspace root's manifest
-[NOTE] for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+  |
+  = [NOTE] to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
+  = [NOTE] to use the edition 2021 resolver, specify `workspace.resolver = "2"` in the workspace root's manifest
+  = [NOTE] for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
 [CHECKING] a v0.1.0 ([ROOT]/foo/a)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
 
@@ -1693,7 +1698,7 @@ fn resolver_enables_new_features() {
         .env("EXPECTED_FEATS", "1")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] common v1.0.0 (registry `dummy-registry`)
 [COMPILING] common v1.0.0
@@ -1826,7 +1831,7 @@ path = "src/lib.rs"
     validate_crate_contents(
         f,
         "a-0.1.0.crate",
-        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
+        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs", "Cargo.lock"],
         [("Cargo.toml", rewritten_toml)],
     );
 }
@@ -2107,7 +2112,7 @@ fn doc_optional() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] spin v1.0.0 (registry `dummy-registry`)
 [DOWNLOADED] bar v1.0.0 (registry `dummy-registry`)
@@ -2224,7 +2229,7 @@ fn minimal_download() {
         .with_stderr_data(
             str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 14 packages to latest compatible versions
+[LOCKING] 14 packages to highest compatible versions
 [DOWNLOADING] crates ...
 [DOWNLOADED] normal_pm v1.0.0 (registry `dummy-registry`)
 [DOWNLOADED] normal v1.0.0 (registry `dummy-registry`)
@@ -2673,7 +2678,7 @@ fn all_features_merges_with_features() {
     p.cargo("run --example ex --all-features --features dep/feat1")
         .with_stderr_data(str![[r#"
 [UPDATING] `dummy-registry` index
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [DOWNLOADING] crates ...
 [DOWNLOADED] dep v0.1.0 (registry `dummy-registry`)
 [COMPILING] dep v0.1.0
@@ -2763,7 +2768,7 @@ fn dep_with_optional_host_deps_activated() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 3 packages to latest compatible versions
+[LOCKING] 3 packages to highest compatible versions
 [COMPILING] serde_build v0.1.0 ([ROOT]/foo/serde_build)
 [COMPILING] serde_derive v0.1.0 ([ROOT]/foo/serde_derive)
 [COMPILING] serde v0.1.0 ([ROOT]/foo/serde)
@@ -2808,7 +2813,7 @@ fn dont_unify_proc_macro_example_from_dependency() {
 
     p.cargo("check")
         .with_stderr_data(str![[r#"
-[LOCKING] 1 package to latest compatible version
+[LOCKING] 1 package to highest compatible version
 [CHECKING] pm_helper v0.0.0 ([ROOT]/foo/pm_helper)
 [CHECKING] foo v0.0.0 ([ROOT]/foo)
 [FINISHED] `dev` profile [unoptimized + debuginfo] target(s) in [ELAPSED]s
